@@ -49,9 +49,8 @@ builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
 var app = builder.Build();
 
 app.UseExceptionHandler();
-app.UseBlazorFrameworkFiles();
-app.UseStaticFiles();
 app.UseCors();
+app.MapStaticAssets();
 
 app.MapClientEndpoints();
 app.MapClientSectorEndpoints();
