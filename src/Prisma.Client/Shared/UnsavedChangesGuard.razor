@@ -1,0 +1,27 @@
+@using Microsoft.AspNetCore.Components.Routing
+@inject IJSRuntime JS
+
+<NavigationLock ConfirmExternalNavigation="@IsDirty" OnBeforeInternalNavigation="ConfirmInternalNavigationAsync" />
+
+@code {
+    [Parameter]
+    public bool IsDirty { get; set; }
+
+    [Parameter]
+    public string ConfirmationMessage { get; set; } =
+        "Há alterações não salvas. Deseja sair e descartá-las?";
+
+    private async Task ConfirmInternalNavigationAsync(LocationChangingContext context)
+    {
+        if (!IsDirty)
+        {
+            return;
+        }
+
+        var shouldLeave = await JS.InvokeAsync<bool>("confirm", ConfirmationMessage);
+        if (!shouldLeave)
+        {
+            context.PreventNavigation();
+        }
+    }
+}

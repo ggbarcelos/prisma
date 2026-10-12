@@ -1,0 +1,489 @@
+@page "/diagnoses/{DiagnosisId:guid}/opportunities/new"
+@page "/diagnoses/{DiagnosisId:guid}/opportunities/{OpportunityId:guid}/edit"
+@using System.ComponentModel.DataAnnotations
+@using System.Net
+@using System.Net.Http.Json
+@using Prisma.Client.Shared
+@using Prisma.Contracts.Bottlenecks
+@using Prisma.Contracts.Diagnoses
+@using Prisma.Contracts.Opportunities
+@implements IDisposable
+@inject HttpClient Http
+@inject NavigationManager Navigation
+
+<UnsavedChangesGuard IsDirty="@_hasUnsavedChanges" />
+
+<PageTitle>@(_isEditing ? "Editar oportunidade" : "Nova oportunidade") | @_diagnosis?.Title</PageTitle>
+
+<section class="diagnosis-page opportunity-page">
+    <div class="diagnosis-breadcrumbs">
+        <NavLink href="/">Início</NavLink>
+        <span aria-hidden="true">/</span>
+        @if (_diagnosis is not null)
+        {
+            <NavLink href="@($"/diagnoses/{_diagnosis.Id}")">@_diagnosis.Title</NavLink>
+            <span aria-hidden="true">/</span>
+            <NavLink href="@($"/diagnoses/{_diagnosis.Id}/opportunities")">Oportunidades</NavLink>
+        }
+        <span aria-hidden="true">/</span>
+        <span>@(_isEditing ? "Editar" : "Nova")</span>
+    </div>
+
+    @if (_isLoading)
+    {
+        <div class="state-message card diagnosis-state" role="status">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            <span>Carregando formulário…</span>
+        </div>
+    }
+    else if (_loadError is not null)
+    {
+        <div class="state-message state-error card diagnosis-state" role="alert">
+            <p>@_loadError</p>
+            <button class="btn btn-outline-primary" type="button" @onclick="LoadAsync">Tentar novamente</button>
+            @if (_diagnosis is not null)
+            {
+                <NavLink class="btn btn-link" href="@($"/diagnoses/{DiagnosisId}/opportunities")">Voltar à lista</NavLink>
+            }
+        </div>
+    }
+    else if (_diagnosis is not null && _editContext is not null)
+    {
+        <header class="opportunity-form-header">
+            <div>
+                <p class="eyebrow">OPORTUNIDADE · @_diagnosis.Title</p>
+                <h1>@(_isEditing ? "Editar oportunidade" : "Cadastrar oportunidade")</h1>
+                <p class="section-description">Descreva a melhoria e associe pelo menos um gargalo observado.</p>
+            </div>
+            <span class="status-pill status-@_diagnosis.Status">@GetStatusLabel(_diagnosis.Status)</span>
+        </header>
+
+        @if (IsReadOnly)
+        {
+            <div class="alert alert-info" role="status">
+                Este diagnóstico está concluído e é somente leitura. Reabra-o para alterar as oportunidades.
+            </div>
+        }
+        @if (_bottlenecks.Count == 0)
+        {
+            <div class="alert alert-warning" role="status">
+                Registre ao menos um gargalo antes de cadastrar uma oportunidade.
+                <NavLink class="alert-link" href="@($"/diagnoses/{DiagnosisId}/bottlenecks")">Ir para gargalos</NavLink>
+            </div>
+        }
+        @if (_saveError is not null)
+        {
+            <div class="alert alert-danger" role="alert">@_saveError</div>
+        }
+
+        @if (_bottlenecks.Count > 0)
+        {
+            <EditForm EditContext="_editContext" OnValidSubmit="SaveAsync" class="opportunity-form card">
+                <DataAnnotationsValidator />
+                <ValidationSummary class="validation-summary" />
+
+                <fieldset disabled="@(IsReadOnly || _isSaving)" class="opportunity-fields">
+                    <div class="opportunity-form-grid">
+                        <div class="form-field form-field-wide">
+                            <label class="form-label" for="opportunity-title">Título <span class="required-mark">*</span></label>
+                            <InputText id="opportunity-title" class="form-control" @bind-Value="_model.Title" />
+                            <ValidationMessage For="@(() => _model.Title)" />
+                        </div>
+
+                        <div class="form-field">
+                            <label class="form-label" for="opportunity-type">Tipo <span class="required-mark">*</span></label>
+                            <InputSelect id="opportunity-type" class="form-select" @bind-Value="_model.Type">
+                                <option value="">Selecione um tipo</option>
+                                @foreach (var type in Types)
+                                {
+                                    <option value="@type.Code">@type.Label</option>
+                                }
+                            </InputSelect>
+                            <ValidationMessage For="@(() => _model.Type)" />
+                        </div>
+
+                        <div class="form-field">
+                            <label class="form-label" for="opportunity-benefit">Benefício esperado <span class="required-mark">*</span></label>
+                            <InputText id="opportunity-benefit" class="form-control" @bind-Value="_model.ExpectedBenefit" />
+                            <ValidationMessage For="@(() => _model.ExpectedBenefit)" />
+                        </div>
+
+                        <div class="form-field form-field-wide">
+                            <label class="form-label" for="opportunity-solution">Descrição da solução</label>
+                            <InputTextArea id="opportunity-solution" class="form-control opportunity-textarea" @bind-Value="_model.SolutionDescription" rows="3" />
+                        </div>
+
+                        <div class="form-field">
+                            <label class="form-label" for="opportunity-impact">Impacto <span class="required-mark">*</span></label>
+                            <InputNumber id="opportunity-impact" class="form-control" @bind-Value="_model.Impact" min="1" max="5" />
+                            <ValidationMessage For="@(() => _model.Impact)" />
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="opportunity-effort">Esforço <span class="required-mark">*</span></label>
+                            <InputNumber id="opportunity-effort" class="form-control" @bind-Value="_model.Effort" min="1" max="5" />
+                            <ValidationMessage For="@(() => _model.Effort)" />
+                        </div>
+                        <div class="form-field">
+                            <label class="form-label" for="opportunity-urgency">Urgência <span class="required-mark">*</span></label>
+                            <InputNumber id="opportunity-urgency" class="form-control" @bind-Value="_model.Urgency" min="1" max="5" />
+                            <ValidationMessage For="@(() => _model.Urgency)" />
+                        </div>
+                        <div class="form-field">
+                            <span class="form-label">Pontuação prevista</span>
+                            <output class="opportunity-preview-score">@PreviewPriorityScore</output>
+                            <span class="form-hint">(impacto × 2) + urgência − esforço</span>
+                        </div>
+
+                        <fieldset class="opportunity-link-fieldset form-field form-field-wide">
+                            <legend class="form-label">Gargalos relacionados <span class="required-mark">*</span></legend>
+                            <p class="form-hint">Selecione um ou mais gargalos deste diagnóstico.</p>
+                            <div class="opportunity-bottleneck-options">
+                                @foreach (var bottleneck in _bottlenecks)
+                                {
+                                    <label class="opportunity-bottleneck-option" @key="bottleneck.Id">
+                                        <input type="checkbox"
+                                               checked="@_model.BottleneckIds.Contains(bottleneck.Id)"
+                                               @onchange="args => ToggleBottleneck(bottleneck.Id, args)"
+                                               aria-label="Associar gargalo: @bottleneck.Title" />
+                                        <span>
+                                            <strong>@bottleneck.Title</strong>
+                                            <small>@GetCategoryLabel(bottleneck.Category) · impacto @bottleneck.Impact/5</small>
+                                        </span>
+                                    </label>
+                                }
+                            </div>
+                            <ValidationMessage For="@(() => _model.BottleneckIds)" />
+                        </fieldset>
+
+                        <div class="form-field form-field-wide">
+                            <label class="form-label" for="opportunity-dependencies">Dependências</label>
+                            <InputTextArea id="opportunity-dependencies" class="form-control opportunity-textarea" @bind-Value="_model.Dependencies" rows="2" />
+                        </div>
+
+                        @if (_model.Type == "AiApplication")
+                        {
+                            <fieldset class="opportunity-ai-fieldset form-field form-field-wide">
+                                <legend class="form-label">Informações opcionais para aplicação de IA</legend>
+                                <p class="form-hint">Esses campos registram contexto. O sistema não recomenda nem gera soluções automaticamente.</p>
+                                <div class="opportunity-form-grid">
+                                    <div class="form-field">
+                                        <label class="form-label" for="opportunity-ai-data">Dados necessários</label>
+                                        <InputTextArea id="opportunity-ai-data" class="form-control opportunity-textarea" @bind-Value="_model.AiDataNeeds" rows="3" />
+                                    </div>
+                                    <div class="form-field">
+                                        <label class="form-label" for="opportunity-human-review">Revisão humana</label>
+                                        <InputSelect id="opportunity-human-review" class="form-select" @bind-Value="_model.NeedsHumanReview">
+                                            <option value="">Não informado</option>
+                                            <option value="true">Necessária</option>
+                                            <option value="false">Não indicada</option>
+                                        </InputSelect>
+                                    </div>
+                                </div>
+                            </fieldset>
+                        }
+                    </div>
+                </fieldset>
+
+                <div class="opportunity-form-footer">
+                    <p class="form-hint"><span class="required-mark">*</span> Campos obrigatórios</p>
+                    <div class="form-actions">
+                        <NavLink class="btn btn-outline-secondary" href="@($"/diagnoses/{DiagnosisId}/opportunities")">Cancelar</NavLink>
+                        @if (!IsReadOnly)
+                        {
+                            <button class="btn btn-primary" type="submit" disabled="@_isSaving">
+                                @if (_isSaving)
+                                {
+                                    <span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>
+                                    <span>Salvando…</span>
+                                }
+                                else
+                                {
+                                    <span>Salvar oportunidade</span>
+                                }
+                            </button>
+                        }
+                    </div>
+                </div>
+            </EditForm>
+        }
+    }
+</section>
+
+@code {
+    private static readonly (string Code, string Label)[] Types =
+    [
+        ("ProcessImprovement", "Melhoria de processo"),
+        ("ExistingTool", "Ferramenta existente"),
+        ("Integration", "Integração"),
+        ("CustomSoftware", "Software sob medida"),
+        ("Automation", "Automação"),
+        ("AiApplication", "Aplicação de IA")
+    ];
+
+    private static readonly IReadOnlyDictionary<string, string> CategoryLabels = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["ManualWork"] = "Trabalho manual",
+        ["Repetition"] = "Repetição",
+        ["Rework"] = "Retrabalho",
+        ["Delay"] = "Demora",
+        ["MissingIntegration"] = "Falta de integração",
+        ["ScatteredInformation"] = "Informações dispersas",
+        ["PeopleDependency"] = "Dependência de pessoas",
+        ["CommercialProblem"] = "Problema comercial",
+        ["Other"] = "Outro"
+    };
+
+    [Parameter] public Guid DiagnosisId { get; set; }
+    [Parameter] public Guid? OpportunityId { get; set; }
+
+    private DiagnosisContract? _diagnosis;
+    private List<BottleneckContract> _bottlenecks = [];
+    private OpportunityContract? _opportunity;
+    private OpportunityFormModel _model = new();
+    private EditContext? _editContext;
+    private string? _loadError;
+    private string? _saveError;
+    private bool _isLoading;
+    private bool _isSaving;
+    private bool _hasUnsavedChanges;
+
+    private bool IsReadOnly => _diagnosis?.Status == "Completed";
+    private bool _isEditing => OpportunityId.HasValue;
+    private int PreviewPriorityScore => (_model.Impact * 2) + _model.Urgency - _model.Effort;
+
+    protected override Task OnParametersSetAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _isLoading = true;
+        _loadError = null;
+        _saveError = null;
+        _diagnosis = null;
+        _bottlenecks = [];
+        _opportunity = null;
+        _editContext?.OnFieldChanged -= HandleFieldChanged;
+        _editContext = null;
+        _hasUnsavedChanges = false;
+        try
+        {
+            using var diagnosisResponse = await Http.GetAsync($"api/diagnoses/{DiagnosisId}");
+            if (diagnosisResponse.StatusCode == HttpStatusCode.NotFound)
+            {
+                _loadError = "O diagnóstico não foi encontrado.";
+                return;
+            }
+
+            if (!diagnosisResponse.IsSuccessStatusCode)
+            {
+                _loadError = "Não foi possível carregar o diagnóstico. Tente novamente.";
+                return;
+            }
+
+            _diagnosis = await diagnosisResponse.Content.ReadFromJsonAsync<DiagnosisContract>();
+            if (_diagnosis is null)
+            {
+                _loadError = "A API não retornou os dados do diagnóstico.";
+                return;
+            }
+
+            using var bottleneckResponse = await Http.GetAsync($"api/diagnoses/{DiagnosisId}/bottlenecks");
+            if (!bottleneckResponse.IsSuccessStatusCode)
+            {
+                _loadError = "Não foi possível carregar os gargalos disponíveis. Tente novamente.";
+                return;
+            }
+
+            _bottlenecks = await bottleneckResponse.Content.ReadFromJsonAsync<List<BottleneckContract>>() ?? [];
+            if (OpportunityId.HasValue)
+            {
+                using var opportunityResponse = await Http.GetAsync($"api/diagnoses/{DiagnosisId}/opportunities");
+                if (!opportunityResponse.IsSuccessStatusCode)
+                {
+                    _loadError = "Não foi possível carregar a oportunidade. Tente novamente.";
+                    return;
+                }
+
+                var opportunities = await opportunityResponse.Content.ReadFromJsonAsync<List<OpportunityContract>>() ?? [];
+                _opportunity = opportunities.SingleOrDefault(item => item.Id == OpportunityId.Value);
+                if (_opportunity is null)
+                {
+                    _loadError = "A oportunidade não foi encontrada neste diagnóstico.";
+                    return;
+                }
+            }
+
+            _model = _opportunity is null
+                ? new OpportunityFormModel()
+                : new OpportunityFormModel
+                {
+                    Title = _opportunity.Title,
+                    SolutionDescription = _opportunity.SolutionDescription ?? string.Empty,
+                    Type = _opportunity.Type,
+                    ExpectedBenefit = _opportunity.ExpectedBenefit,
+                    Impact = _opportunity.Impact,
+                    Effort = _opportunity.Effort,
+                    Urgency = _opportunity.Urgency,
+                    Dependencies = _opportunity.Dependencies ?? string.Empty,
+                    AiDataNeeds = _opportunity.AiDataNeeds ?? string.Empty,
+                    NeedsHumanReview = _opportunity.NeedsHumanReview,
+                    BottleneckIds = _opportunity.BottleneckIds.ToHashSet()
+                };
+            _editContext = new EditContext(_model);
+            _editContext.OnFieldChanged += HandleFieldChanged;
+        }
+        catch (HttpRequestException)
+        {
+            _loadError = "Não foi possível conectar à API. Verifique o serviço e tente novamente.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _loadError = "A resposta da API não pôde ser lida. Tente novamente.";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void HandleFieldChanged(object? sender, FieldChangedEventArgs args)
+    {
+        _hasUnsavedChanges = true;
+        _saveError = null;
+    }
+
+    private void ToggleBottleneck(Guid bottleneckId, ChangeEventArgs args)
+    {
+        if (args.Value is true)
+        {
+            _model.BottleneckIds.Add(bottleneckId);
+        }
+        else
+        {
+            _model.BottleneckIds.Remove(bottleneckId);
+        }
+
+        _editContext?.NotifyFieldChanged(_editContext.Field(nameof(OpportunityFormModel.BottleneckIds)));
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_isSaving || IsReadOnly || _diagnosis is null || _model.BottleneckIds.Count == 0)
+        {
+            return;
+        }
+
+        _isSaving = true;
+        _saveError = null;
+        try
+        {
+            var input = new OpportunityInput(
+                _model.Title,
+                NormalizeOptional(_model.SolutionDescription),
+                _model.Type,
+                _model.ExpectedBenefit,
+                _model.Impact,
+                _model.Effort,
+                _model.Urgency,
+                NormalizeOptional(_model.Dependencies),
+                NormalizeOptional(_model.AiDataNeeds),
+                _model.NeedsHumanReview,
+                null,
+                _model.BottleneckIds.OrderBy(id => id).ToArray());
+
+            using var response = _opportunity is null
+                ? await Http.PostAsJsonAsync($"api/diagnoses/{DiagnosisId}/opportunities", input)
+                : await Http.PutAsJsonAsync($"api/diagnoses/{DiagnosisId}/opportunities/{_opportunity.Id}", input);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _saveError = response.StatusCode switch
+                {
+                    HttpStatusCode.BadRequest => "Revise os campos destacados e associe ao menos um gargalo.",
+                    HttpStatusCode.NotFound => "Um gargalo relacionado não está mais disponível neste diagnóstico.",
+                    HttpStatusCode.Conflict => "Não foi possível salvar. Confirme se o diagnóstico pode ser editado e tente novamente.",
+                    _ => "Não foi possível salvar a oportunidade. Seus dados continuam neste formulário."
+                };
+                return;
+            }
+
+            var savedOpportunity = await response.Content.ReadFromJsonAsync<OpportunityContract>();
+            if (savedOpportunity is null)
+            {
+                _saveError = "A API não confirmou a oportunidade salva. Mantenha o formulário aberto e tente novamente.";
+                return;
+            }
+
+            _hasUnsavedChanges = false;
+            Navigation.NavigateTo($"/diagnoses/{DiagnosisId}/opportunities");
+        }
+        catch (HttpRequestException)
+        {
+            _saveError = "Não foi possível conectar à API. Seus dados continuam neste formulário; tente novamente.";
+        }
+        catch (TaskCanceledException)
+        {
+            _saveError = "Não foi possível confirmar o salvamento. Seus dados continuam neste formulário; tente novamente.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _saveError = "A resposta da API não confirmou o salvamento. Seus dados continuam neste formulário.";
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private static string? NormalizeOptional(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string GetCategoryLabel(string category) => CategoryLabels.GetValueOrDefault(category, "Categoria indisponível");
+
+    private static string GetStatusLabel(string status) => status switch
+    {
+        "Draft" => "Rascunho",
+        "InProgress" => "Em andamento",
+        "Completed" => "Concluído",
+        _ => "Status indisponível"
+    };
+
+    public void Dispose()
+    {
+        if (_editContext is not null)
+        {
+            _editContext.OnFieldChanged -= HandleFieldChanged;
+        }
+    }
+
+    private sealed class OpportunityFormModel
+    {
+        [Required(ErrorMessage = "Informe o título da oportunidade.")]
+        public string Title { get; set; } = string.Empty;
+
+        [Required(ErrorMessage = "Selecione um tipo de oportunidade.")]
+        public string Type { get; set; } = string.Empty;
+
+        public string? SolutionDescription { get; set; }
+
+        [Required(ErrorMessage = "Informe o benefício esperado.")]
+        public string ExpectedBenefit { get; set; } = string.Empty;
+
+        [Range(1, 5, ErrorMessage = "O impacto deve estar entre 1 e 5.")]
+        public int Impact { get; set; } = 3;
+
+        [Range(1, 5, ErrorMessage = "O esforço deve estar entre 1 e 5.")]
+        public int Effort { get; set; } = 3;
+
+        [Range(1, 5, ErrorMessage = "A urgência deve estar entre 1 e 5.")]
+        public int Urgency { get; set; } = 3;
+
+        public string? Dependencies { get; set; }
+
+        public string? AiDataNeeds { get; set; }
+
+        public bool? NeedsHumanReview { get; set; }
+
+        [MinLength(1, ErrorMessage = "Associe ao menos um gargalo.")]
+        public HashSet<Guid> BottleneckIds { get; set; } = [];
+    }
+}

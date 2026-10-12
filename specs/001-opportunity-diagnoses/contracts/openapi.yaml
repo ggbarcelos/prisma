@@ -1,0 +1,762 @@
+openapi: 3.1.0
+info:
+  title: Diagnóstico API
+  version: 1.0.0
+  description: Contrato interno JSON do MVP para um consultor em ambiente local ou restrito.
+servers:
+  - url: /api
+tags:
+  - name: Clients
+  - name: ClientSectors
+  - name: Diagnoses
+  - name: SectorAssessments
+  - name: Bottlenecks
+  - name: Opportunities
+  - name: Phases
+  - name: Reports
+paths:
+  /clients:
+    get:
+      tags: [Clients]
+      summary: Lista clientes por atualização mais recente e pesquisa por empresa, segmento ou contato
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Clientes encontrados
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Client" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [Clients]
+      summary: Cadastra cliente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientInput" }
+      responses:
+        "201":
+          description: Cliente persistido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Client" }
+        default: { $ref: "#/components/responses/Problem" }
+  /clients/{clientId}:
+    parameters:
+      - $ref: "#/components/parameters/ClientId"
+    get:
+      tags: [Clients]
+      summary: Obtém um cliente
+      responses:
+        "200":
+          description: Cliente
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Client" }
+        default: { $ref: "#/components/responses/Problem" }
+    put:
+      tags: [Clients]
+      summary: Atualiza dados do cliente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientInput" }
+      responses:
+        "200":
+          description: Cliente atualizado e persistido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Client" }
+        default: { $ref: "#/components/responses/Problem" }
+  /clients/{clientId}/sectors:
+    parameters:
+      - $ref: "#/components/parameters/ClientId"
+    get:
+      tags: [ClientSectors]
+      summary: Lista setores do cliente
+      responses:
+        "200":
+          description: Setores
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ClientSector" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [ClientSectors]
+      summary: Cadastra setor para o cliente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientSectorInput" }
+      responses:
+        "201":
+          description: Setor persistido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientSector" }
+        default: { $ref: "#/components/responses/Problem" }
+  /clients/{clientId}/sectors/{sectorId}:
+    parameters:
+      - $ref: "#/components/parameters/ClientId"
+      - name: sectorId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      tags: [ClientSectors]
+      summary: Atualiza setor do cliente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientSectorInput" }
+      responses:
+        "200":
+          description: Setor atualizado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientSector" }
+        default: { $ref: "#/components/responses/Problem" }
+  /diagnoses:
+    get:
+      tags: [Diagnoses]
+      summary: Lista diagnósticos recentes, opcionalmente por cliente
+      parameters:
+        - name: clientId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Diagnósticos ordenados pela atualização mais recente
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DiagnosisSummary" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [Diagnoses]
+      summary: Cria diagnóstico em rascunho e suas fases iniciais sugeridas
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DiagnosisInput" }
+      responses:
+        "201":
+          description: Diagnóstico persistido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Diagnosis" }
+        default: { $ref: "#/components/responses/Problem" }
+  /diagnoses/{diagnosisId}:
+    parameters:
+      - $ref: "#/components/parameters/DiagnosisId"
+    get:
+      tags: [Diagnoses]
+      summary: Obtém o diagnóstico e seus dados persistidos
+      responses:
+        "200":
+          description: Diagnóstico
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Diagnosis" }
+        default: { $ref: "#/components/responses/Problem" }
+    put:
+      tags: [Diagnoses]
+      summary: Atualiza campos e objetivos do diagnóstico
+      description: Rejeita mutações quando o status for Completed. Trocar o cliente é permitido somente antes de existir qualquer avaliação de setor.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DiagnosisInput" }
+      responses:
+        "200":
+          description: Diagnóstico atualizado e persistido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Diagnosis" }
+        default: { $ref: "#/components/responses/Problem" }
+  /diagnoses/{diagnosisId}/status:
+    parameters:
+      - $ref: "#/components/parameters/DiagnosisId"
+    put:
+      tags: [Diagnoses]
+      summary: Altera status ou reabre diagnóstico
+      description: Draft e InProgress podem alternar ou concluir após validar objetivo principal, gargalo e oportunidade. Completed só pode reabrir para InProgress.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DiagnosisStatusInput" }
+      responses:
+        "200":
+          description: Status persistido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiagnosisSummary" }
+        default: { $ref: "#/components/responses/Problem" }
+  /diagnoses/{diagnosisId}/assessments:
+    parameters:
+      - $ref: "#/components/parameters/DiagnosisId"
+    post:
+      tags: [SectorAssessments]
+      summary: Vincula setor do cliente ao diagnóstico e captura o nome atual
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SectorAssessmentInput" }
+      responses:
+        "201":
+          description: Avaliação criada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SectorAssessment" }
+        default: { $ref: "#/components/responses/Problem" }
+  /diagnoses/{diagnosisId}/assessments/{assessmentId}:
+    parameters:
+      - $ref: "#/components/parameters/DiagnosisId"
+      - name: assessmentId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      tags: [SectorAssessments]
+      summary: Remove avaliação ainda sem respostas e gargalos
+      responses:
+        "204": { description: Avaliação removida }
+        default: { $ref: "#/components/responses/Problem" }
+  /diagnoses/{diagnosisId}/assessments/{assessmentId}/answers:
+    parameters:
+      - $ref: "#/components/parameters/DiagnosisId"
+      - name: assessmentId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      tags: [SectorAssessments]
+      summary: Substitui as dez respostas em uma ação explícita de salvamento
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnswersInput" }
+      responses:
+        "200":
+          description: Respostas persistidas
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SectorAssessment" }
+        default: { $ref: "#/components/responses/Problem" }
+  /diagnoses/{diagnosisId}/bottlenecks:
+    parameters:
+      - $ref: "#/components/parameters/DiagnosisId"
+    get:
+      tags: [Bottlenecks]
+      summary: Lista gargalos do diagnóstico
+      responses:
+        "200":
+          description: Gargalos
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Bottleneck" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [Bottlenecks]
+      summary: Registra gargalo em um setor avaliado pelo diagnóstico
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BottleneckInput" }
+      responses:
+        "201":
+          description: Gargalo persistido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Bottleneck" }
+        default: { $ref: "#/components/responses/Problem" }
+  /diagnoses/{diagnosisId}/bottlenecks/{bottleneckId}:
+    parameters:
+      - $ref: "#/components/parameters/DiagnosisId"
+      - name: bottleneckId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      tags: [Bottlenecks]
+      summary: Atualiza gargalo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BottleneckInput" }
+      responses:
+        "200":
+          description: Gargalo atualizado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Bottleneck" }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [Bottlenecks]
+      summary: Exclui gargalo sem oportunidades vinculadas
+      responses:
+        "204": { description: Gargalo removido }
+        default: { $ref: "#/components/responses/Problem" }
+  /diagnoses/{diagnosisId}/opportunities:
+    parameters:
+      - $ref: "#/components/parameters/DiagnosisId"
+    get:
+      tags: [Opportunities]
+      summary: Lista oportunidades na ordem da prioridade calculada
+      responses:
+        "200":
+          description: Oportunidades priorizadas
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Opportunity" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [Opportunities]
+      summary: Cadastra oportunidade vinculada a gargalos do mesmo diagnóstico
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OpportunityInput" }
+      responses:
+        "201":
+          description: Oportunidade persistida com pontuação calculada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Opportunity" }
+        default: { $ref: "#/components/responses/Problem" }
+  /diagnoses/{diagnosisId}/opportunities/{opportunityId}:
+    parameters:
+      - $ref: "#/components/parameters/DiagnosisId"
+      - name: opportunityId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      tags: [Opportunities]
+      summary: Atualiza oportunidade e suas associações
+      description: A coleção bottleneckIds é obrigatória, única e não vazia. phaseId pode ser null.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OpportunityInput" }
+      responses:
+        "200":
+          description: Oportunidade atualizada e prioridade recalculada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Opportunity" }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [Opportunities]
+      summary: Exclui oportunidade após confirmação na interface
+      responses:
+        "204": { description: Oportunidade removida }
+        default: { $ref: "#/components/responses/Problem" }
+  /diagnoses/{diagnosisId}/phases:
+    parameters:
+      - $ref: "#/components/parameters/DiagnosisId"
+    get:
+      tags: [Phases]
+      summary: Lista fases na ordem manual
+      responses:
+        "200":
+          description: Fases
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Phase" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [Phases]
+      summary: Cria fase editável no diagnóstico
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PhaseInput" }
+      responses:
+        "201":
+          description: Fase criada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Phase" }
+        default: { $ref: "#/components/responses/Problem" }
+  /diagnoses/{diagnosisId}/phases/{phaseId}:
+    parameters:
+      - $ref: "#/components/parameters/DiagnosisId"
+      - name: phaseId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      tags: [Phases]
+      summary: Atualiza nome ou descrição da fase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PhaseInput" }
+      responses:
+        "200":
+          description: Fase atualizada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Phase" }
+        default: { $ref: "#/components/responses/Problem" }
+  /diagnoses/{diagnosisId}/phases/order:
+    parameters:
+      - $ref: "#/components/parameters/DiagnosisId"
+    put:
+      tags: [Phases]
+      summary: Persiste nova ordem contendo cada fase exatamente uma vez
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PhaseOrderInput" }
+      responses:
+        "200":
+          description: Ordem persistida
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Phase" }
+        default: { $ref: "#/components/responses/Problem" }
+  /diagnoses/{diagnosisId}/report:
+    parameters:
+      - $ref: "#/components/parameters/DiagnosisId"
+    get:
+      tags: [Reports]
+      summary: Monta relatório a partir dos dados persistidos
+      responses:
+        "200":
+          description: Projeção de relatório; valores ausentes são exibidos como Não informado pela interface
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Report" }
+        default: { $ref: "#/components/responses/Problem" }
+    put:
+      tags: [Reports]
+      summary: Salva resumo, recomendações e próximos passos editáveis
+      description: Salvar é explícito; rejeita edição de diagnóstico concluído.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReportInput" }
+      responses:
+        "200":
+          description: Texto do relatório persistido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Report" }
+        default: { $ref: "#/components/responses/Problem" }
+components:
+  parameters:
+    ClientId:
+      name: clientId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    DiagnosisId:
+      name: diagnosisId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    Problem:
+      description: Erro de validação, recurso ausente, conflito ou falha não detalhada
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/ProblemDetails" }
+  schemas:
+    ProblemDetails:
+      type: object
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+    ClientInput:
+      type: object
+      description: Corpo representa o estado completo do formulário; campos opcionais devem ser enviados como null quando vazios.
+      required: [companyName, segment, contactName, email, phone, notes]
+      properties:
+        companyName: { type: string, minLength: 1 }
+        segment: { type: string, minLength: 1 }
+        contactName: { type: [string, "null"] }
+        email: { type: [string, "null"], format: email }
+        phone: { type: [string, "null"] }
+        notes: { type: [string, "null"] }
+    Client:
+      allOf:
+        - $ref: "#/components/schemas/ClientInput"
+        - type: object
+          required: [id, createdAtUtc, updatedAtUtc]
+          properties:
+            id: { type: string, format: uuid }
+            createdAtUtc: { type: string, format: date-time }
+            updatedAtUtc: { type: string, format: date-time }
+    ClientSectorInput:
+      type: object
+      description: Corpo representa o estado completo do formulário; campos opcionais devem ser enviados como null quando vazios.
+      required: [name, responsibleName, peopleCount]
+      properties:
+        name: { type: string, minLength: 1 }
+        responsibleName: { type: [string, "null"] }
+        peopleCount: { type: [integer, "null"] }
+    ClientSector:
+      allOf:
+        - $ref: "#/components/schemas/ClientSectorInput"
+        - type: object
+          required: [id, clientId]
+          properties:
+            id: { type: string, format: uuid }
+            clientId: { type: string, format: uuid }
+    Objective:
+      type: object
+      description: customDescription é obrigatório quando code for Other e ausente para os demais códigos.
+      required: [code, isPrimary]
+      properties:
+        code:
+          type: string
+          enum: [ReduceCosts, ImproveProductivity, ReduceErrorsAndRework, ImproveService, IncreaseSales, IntegrateInformation, Other]
+        isPrimary: { type: boolean }
+        customDescription: { type: [string, "null"] }
+    DiagnosisInput:
+      type: object
+      description: Corpo representa o estado completo do formulário; context pode ser null.
+      required: [clientId, title, assessmentDate, context, objectives]
+      properties:
+        clientId: { type: string, format: uuid }
+        title: { type: string, minLength: 1 }
+        assessmentDate: { type: string, format: date }
+        context: { type: [string, "null"] }
+        objectives:
+          type: array
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/Objective" }
+    DiagnosisSummary:
+      type: object
+      required: [id, clientId, clientName, title, assessmentDate, status, updatedAtUtc]
+      properties:
+        id: { type: string, format: uuid }
+        clientId: { type: string, format: uuid }
+        clientName: { type: string }
+        title: { type: string }
+        assessmentDate: { type: string, format: date }
+        status: { type: string, enum: [Draft, InProgress, Completed] }
+        updatedAtUtc: { type: string, format: date-time }
+    Diagnosis:
+      allOf:
+        - $ref: "#/components/schemas/DiagnosisSummary"
+        - type: object
+          required: [context, objectives, assessments, bottlenecks, opportunities, phases]
+          properties:
+            context: { type: [string, "null"] }
+            executiveSummary: { type: [string, "null"] }
+            generalRecommendations: { type: [string, "null"] }
+            nextSteps: { type: [string, "null"] }
+            objectives:
+              type: array
+              items: { $ref: "#/components/schemas/Objective" }
+            assessments:
+              type: array
+              items: { $ref: "#/components/schemas/SectorAssessment" }
+            bottlenecks:
+              type: array
+              items: { $ref: "#/components/schemas/Bottleneck" }
+            opportunities:
+              type: array
+              items: { $ref: "#/components/schemas/Opportunity" }
+            phases:
+              type: array
+              items: { $ref: "#/components/schemas/Phase" }
+    DiagnosisStatusInput:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [Draft, InProgress, Completed] }
+    SectorAssessmentInput:
+      type: object
+      required: [clientSectorId]
+      properties:
+        clientSectorId: { type: string, format: uuid }
+    AnswersInput:
+      type: object
+      description: PUT substitui o snapshot completo de respostas; texto vazio é normalizado para null.
+      required: [q01, q02, q03, q04, q05, q06, q07, q08, q09, q10]
+      properties:
+        q01: { type: [string, "null"] }
+        q02: { type: [string, "null"] }
+        q03: { type: [string, "null"] }
+        q04: { type: [string, "null"] }
+        q05: { type: [string, "null"] }
+        q06: { type: [string, "null"] }
+        q07: { type: [string, "null"] }
+        q08: { type: [string, "null"] }
+        q09: { type: [string, "null"] }
+        q10: { type: [string, "null"] }
+    SectorAssessment:
+      allOf:
+        - $ref: "#/components/schemas/SectorAssessmentInput"
+        - $ref: "#/components/schemas/AnswersInput"
+        - type: object
+          required: [id, diagnosisId, sectorNameSnapshot, answeredCount]
+          properties:
+            id: { type: string, format: uuid }
+            diagnosisId: { type: string, format: uuid }
+            sectorNameSnapshot: { type: string }
+            answeredCount: { type: integer, minimum: 0, maximum: 10 }
+    BottleneckInput:
+      type: object
+      description: Corpo representa o estado completo do formulário; campos opcionais devem ser enviados como null quando vazios.
+      required: [sectorAssessmentId, title, description, category, impact, frequency, evidence, probableCause, estimatedMonthlyHours, notes]
+      properties:
+        sectorAssessmentId: { type: string, format: uuid }
+        title: { type: string, minLength: 1 }
+        description: { type: [string, "null"] }
+        category:
+          type: string
+          enum: [ManualWork, Repetition, Rework, Delay, MissingIntegration, ScatteredInformation, PeopleDependency, CommercialProblem, Other]
+        impact: { type: integer, minimum: 1, maximum: 5 }
+        frequency: { type: [string, "null"] }
+        evidence: { type: [string, "null"] }
+        probableCause: { type: [string, "null"] }
+        estimatedMonthlyHours: { type: [number, "null"], minimum: 0 }
+        notes: { type: [string, "null"] }
+    Bottleneck:
+      allOf:
+        - $ref: "#/components/schemas/BottleneckInput"
+        - type: object
+          required: [id, diagnosisId]
+          properties:
+            id: { type: string, format: uuid }
+            diagnosisId: { type: string, format: uuid }
+    OpportunityInput:
+      type: object
+      description: Corpo representa o estado completo do formulário; envie null para campos opcionais vazios, inclusive phaseId para deixar sem fase.
+      required: [title, solutionDescription, type, expectedBenefit, impact, effort, urgency, dependencies, aiDataNeeds, needsHumanReview, phaseId, bottleneckIds]
+      properties:
+        title: { type: string, minLength: 1 }
+        solutionDescription: { type: [string, "null"] }
+        type:
+          type: string
+          enum: [ProcessImprovement, ExistingTool, Integration, CustomSoftware, Automation, AiApplication]
+        expectedBenefit: { type: string, minLength: 1 }
+        impact: { type: integer, minimum: 1, maximum: 5 }
+        effort: { type: integer, minimum: 1, maximum: 5 }
+        urgency: { type: integer, minimum: 1, maximum: 5 }
+        dependencies: { type: [string, "null"] }
+        aiDataNeeds: { type: [string, "null"] }
+        needsHumanReview: { type: [boolean, "null"] }
+        phaseId: { type: [string, "null"], format: uuid }
+        bottleneckIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, format: uuid }
+    Opportunity:
+      allOf:
+        - $ref: "#/components/schemas/OpportunityInput"
+        - type: object
+          required: [id, diagnosisId, priorityScore]
+          properties:
+            id: { type: string, format: uuid }
+            diagnosisId: { type: string, format: uuid }
+            priorityScore: { type: integer, minimum: -2, maximum: 14 }
+    PhaseInput:
+      type: object
+      description: Corpo representa o estado completo do formulário; description pode ser null.
+      required: [name, description]
+      properties:
+        name: { type: string, minLength: 1 }
+        description: { type: [string, "null"] }
+    Phase:
+      allOf:
+        - $ref: "#/components/schemas/PhaseInput"
+        - type: object
+          required: [id, diagnosisId, sortOrder]
+          properties:
+            id: { type: string, format: uuid }
+            diagnosisId: { type: string, format: uuid }
+            sortOrder: { type: integer, minimum: 0 }
+    PhaseOrderInput:
+      type: object
+      required: [phaseIds]
+      properties:
+        phaseIds:
+          type: array
+          uniqueItems: true
+          items: { type: string, format: uuid }
+    ReportInput:
+      type: object
+      required: [executiveSummary, generalRecommendations, nextSteps]
+      properties:
+        executiveSummary: { type: [string, "null"] }
+        generalRecommendations: { type: [string, "null"] }
+        nextSteps: { type: [string, "null"] }
+    Report:
+      type: object
+      required: [diagnosisId, diagnosisTitle, assessmentDate, status, client, objectives, executiveSummary, generalRecommendations, assessments, bottlenecks, opportunities, phases, unallocatedOpportunities, nextSteps]
+      properties:
+        diagnosisId: { type: string, format: uuid }
+        diagnosisTitle: { type: string }
+        assessmentDate: { type: string, format: date }
+        context: { type: [string, "null"] }
+        status: { type: string, enum: [Draft, InProgress, Completed] }
+        client: { $ref: "#/components/schemas/Client" }
+        objectives:
+          type: array
+          items: { $ref: "#/components/schemas/Objective" }
+        executiveSummary: { type: [string, "null"] }
+        generalRecommendations: { type: [string, "null"] }
+        assessments:
+          type: array
+          items: { $ref: "#/components/schemas/SectorAssessment" }
+        bottlenecks:
+          type: array
+          items: { $ref: "#/components/schemas/Bottleneck" }
+        opportunities:
+          type: array
+          items: { $ref: "#/components/schemas/Opportunity" }
+        phases:
+          type: array
+          items: { $ref: "#/components/schemas/Phase" }
+        unallocatedOpportunities:
+          type: array
+          items: { $ref: "#/components/schemas/Opportunity" }
+        nextSteps: { type: [string, "null"] }

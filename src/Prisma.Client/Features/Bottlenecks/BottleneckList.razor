@@ -1,0 +1,315 @@
+@page "/diagnoses/{DiagnosisId:guid}/bottlenecks"
+@using System.Net
+@using System.Net.Http.Json
+@using Prisma.Contracts.Bottlenecks
+@using Prisma.Contracts.Diagnoses
+@inject HttpClient Http
+@inject IJSRuntime JS
+
+<PageTitle>@(_diagnosis?.Title ?? "Gargalos") | Diagnóstico</PageTitle>
+
+<section class="diagnosis-page bottleneck-page">
+    <div class="diagnosis-breadcrumbs">
+        <NavLink href="/">Início</NavLink>
+        <span aria-hidden="true">/</span>
+        @if (_diagnosis is not null)
+        {
+            <NavLink href="@($"/diagnoses/{_diagnosis.Id}")">@_diagnosis.Title</NavLink>
+        }
+        <span aria-hidden="true">/</span>
+        <span>Gargalos</span>
+    </div>
+
+    @if (_isLoading)
+    {
+        <div class="state-message card diagnosis-state" role="status">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            <span>Carregando gargalos…</span>
+        </div>
+    }
+    else if (_loadError is not null)
+    {
+        <div class="state-message state-error card diagnosis-state" role="alert">
+            <p>@_loadError</p>
+            <button class="btn btn-outline-primary" type="button" @onclick="LoadAsync">Tentar novamente</button>
+        </div>
+    }
+    else if (_diagnosis is not null)
+    {
+        <header class="diagnosis-page-header bottleneck-page-header">
+            <div>
+                <p class="eyebrow">INVESTIGAÇÃO</p>
+                <h1>Gargalos</h1>
+                <p class="section-description">@_diagnosis.Title · @_diagnosis.ClientName</p>
+            </div>
+            <div class="bottleneck-header-actions">
+                <span class="status-pill status-@_diagnosis.Status">@GetStatusLabel(_diagnosis.Status)</span>
+                @if (!IsReadOnly && _diagnosis.Assessments.Count > 0)
+                {
+                    <NavLink class="btn btn-primary" href="@($"/diagnoses/{DiagnosisId}/bottlenecks/new")">Registrar gargalo</NavLink>
+                }
+            </div>
+        </header>
+
+        @if (IsReadOnly)
+        {
+            <div class="alert alert-info" role="status">
+                Este diagnóstico está concluído e é somente leitura. Reabra-o para alterar os gargalos.
+            </div>
+        }
+        @if (!string.IsNullOrWhiteSpace(_statusMessage))
+        {
+            <div class="alert alert-success" role="status">@_statusMessage</div>
+        }
+        @if (_deleteError is not null)
+        {
+            <div class="alert alert-danger" role="alert">@_deleteError</div>
+        }
+
+        @if (_diagnosis.Assessments.Count == 0)
+        {
+            <div class="state-message card bottleneck-empty-state">
+                <strong>Vincule um setor avaliado antes de registrar gargalos</strong>
+                <span>Os gargalos sempre pertencem a um setor do diagnóstico.</span>
+                <NavLink class="btn btn-outline-primary" href="@($"/diagnoses/{DiagnosisId}")">Voltar ao diagnóstico</NavLink>
+            </div>
+        }
+        else if (_bottlenecks.Count == 0)
+        {
+            <div class="state-message card bottleneck-empty-state">
+                <span class="bottleneck-empty-icon" aria-hidden="true">◇</span>
+                <strong>Nenhum gargalo registrado</strong>
+                <span>Registre um problema observado em um dos setores avaliados.</span>
+                @if (!IsReadOnly)
+                {
+                    <NavLink class="btn btn-primary" href="@($"/diagnoses/{DiagnosisId}/bottlenecks/new")">Registrar primeiro gargalo</NavLink>
+                }
+            </div>
+        }
+        else
+        {
+            <section class="bottleneck-list-card card" aria-labelledby="bottleneck-list-heading">
+                <div class="diagnosis-section-heading bottleneck-list-heading">
+                    <div>
+                        <p class="eyebrow">PROBLEMAS OBSERVADOS</p>
+                        <h2 id="bottleneck-list-heading">Gargalos registrados (@_bottlenecks.Count)</h2>
+                    </div>
+                    <div class="bottleneck-list-actions">
+                        <NavLink class="btn btn-sm btn-outline-primary" href="@($"/diagnoses/{DiagnosisId}/opportunities")">Ver oportunidades</NavLink>
+                        <NavLink class="btn btn-sm btn-outline-secondary" href="@($"/diagnoses/{DiagnosisId}")">Voltar ao diagnóstico</NavLink>
+                    </div>
+                </div>
+
+                <div class="bottleneck-list">
+                    @foreach (var bottleneck in _bottlenecks)
+                    {
+                        <article class="bottleneck-item" @key="bottleneck.Id">
+                            <div class="bottleneck-item-main">
+                                <div class="bottleneck-item-title-row">
+                                    <h3>@bottleneck.Title</h3>
+                                    <span class="bottleneck-impact">Impacto @bottleneck.Impact/5</span>
+                                </div>
+                                <p class="bottleneck-meta">
+                                    <span>@GetCategoryLabel(bottleneck.Category)</span>
+                                    <span aria-hidden="true">·</span>
+                                    <span>@GetSectorName(bottleneck.SectorAssessmentId)</span>
+                                    @if (!string.IsNullOrWhiteSpace(bottleneck.Frequency))
+                                    {
+                                        <span aria-hidden="true">·</span>
+                                        <span>@bottleneck.Frequency</span>
+                                    }
+                                </p>
+                                @if (!string.IsNullOrWhiteSpace(bottleneck.Description))
+                                {
+                                    <p class="bottleneck-description">@bottleneck.Description</p>
+                                }
+                                <div class="bottleneck-evidence-grid">
+                                    @if (!string.IsNullOrWhiteSpace(bottleneck.Evidence))
+                                    {
+                                        <div><strong>Evidência ou exemplo</strong><span>@bottleneck.Evidence</span></div>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(bottleneck.ProbableCause))
+                                    {
+                                        <div><strong>Causa provável</strong><span>@bottleneck.ProbableCause</span></div>
+                                    }
+                                </div>
+                                @if (bottleneck.EstimatedMonthlyHours is not null)
+                                {
+                                    <p class="bottleneck-hours">@bottleneck.EstimatedMonthlyHours.Value.ToString("0.##") h estimadas por mês</p>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(bottleneck.Notes))
+                                {
+                                    <p class="bottleneck-description"><strong>Observações:</strong> @bottleneck.Notes</p>
+                                }
+                            </div>
+                            @if (!IsReadOnly)
+                            {
+                                <div class="bottleneck-item-actions">
+                                    <NavLink class="btn btn-sm btn-outline-primary"
+                                             href="@($"/diagnoses/{DiagnosisId}/bottlenecks/{bottleneck.Id}/edit")">Editar</NavLink>
+                                    <button class="btn btn-sm btn-outline-danger" type="button"
+                                            disabled="@(_deletingId.HasValue)" @onclick="() => DeleteAsync(bottleneck)">
+                                        @(_deletingId == bottleneck.Id ? "Excluindo…" : "Excluir")
+                                    </button>
+                                </div>
+                            }
+                        </article>
+                    }
+                </div>
+            </section>
+        }
+    }
+</section>
+
+@code {
+    private static readonly IReadOnlyDictionary<string, string> CategoryLabels = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["ManualWork"] = "Trabalho manual",
+        ["Repetition"] = "Repetição",
+        ["Rework"] = "Retrabalho",
+        ["Delay"] = "Demora",
+        ["MissingIntegration"] = "Falta de integração",
+        ["ScatteredInformation"] = "Informações dispersas",
+        ["PeopleDependency"] = "Dependência de pessoas",
+        ["CommercialProblem"] = "Problema comercial",
+        ["Other"] = "Outro"
+    };
+
+    [Parameter] public Guid DiagnosisId { get; set; }
+
+    private DiagnosisContract? _diagnosis;
+    private List<BottleneckContract> _bottlenecks = [];
+    private string? _loadError;
+    private string? _deleteError;
+    private string? _statusMessage;
+    private Guid? _deletingId;
+    private bool _isLoading;
+
+    private bool IsReadOnly => _diagnosis?.Status == "Completed";
+
+    protected override Task OnParametersSetAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _isLoading = true;
+        _loadError = null;
+        _deleteError = null;
+        _statusMessage = null;
+        _diagnosis = null;
+        _bottlenecks = [];
+        try
+        {
+            using var diagnosisResponse = await Http.GetAsync($"api/diagnoses/{DiagnosisId}");
+            if (diagnosisResponse.StatusCode == HttpStatusCode.NotFound)
+            {
+                _loadError = "O diagnóstico não foi encontrado.";
+                return;
+            }
+
+            if (!diagnosisResponse.IsSuccessStatusCode)
+            {
+                _loadError = "Não foi possível carregar o diagnóstico. Tente novamente.";
+                return;
+            }
+
+            _diagnosis = await diagnosisResponse.Content.ReadFromJsonAsync<DiagnosisContract>();
+            if (_diagnosis is null)
+            {
+                _loadError = "A API não retornou os dados do diagnóstico.";
+                return;
+            }
+
+            using var bottleneckResponse = await Http.GetAsync($"api/diagnoses/{DiagnosisId}/bottlenecks");
+            if (!bottleneckResponse.IsSuccessStatusCode)
+            {
+                _loadError = "Não foi possível carregar os gargalos. Tente novamente.";
+                return;
+            }
+
+            _bottlenecks = await bottleneckResponse.Content.ReadFromJsonAsync<List<BottleneckContract>>() ?? [];
+        }
+        catch (HttpRequestException)
+        {
+            _loadError = "Não foi possível conectar à API. Verifique o serviço e tente novamente.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _loadError = "A resposta da API não pôde ser lida. Tente novamente.";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task DeleteAsync(BottleneckContract bottleneck)
+    {
+        if (IsReadOnly || _deletingId.HasValue)
+        {
+            return;
+        }
+
+        var confirmed = await JS.InvokeAsync<bool>(
+            "confirm",
+            $"Excluir o gargalo ‘{bottleneck.Title}’? Esta ação não pode ser desfeita. Gargalos vinculados a oportunidades não podem ser removidos.");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        _deletingId = bottleneck.Id;
+        _deleteError = null;
+        _statusMessage = null;
+        try
+        {
+            using var response = await Http.DeleteAsync($"api/diagnoses/{DiagnosisId}/bottlenecks/{bottleneck.Id}");
+            if (response.StatusCode == HttpStatusCode.Conflict)
+            {
+                _deleteError = "Este gargalo está vinculado a uma oportunidade. Reassocie ou exclua a oportunidade antes de tentar novamente.";
+                return;
+            }
+
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                _deleteError = "O gargalo não foi encontrado. Atualize a lista antes de tentar novamente.";
+                return;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _deleteError = "Não foi possível excluir o gargalo. Tente novamente.";
+                return;
+            }
+
+            _bottlenecks.RemoveAll(item => item.Id == bottleneck.Id);
+            _statusMessage = "Gargalo excluído.";
+        }
+        catch (HttpRequestException)
+        {
+            _deleteError = "Não foi possível conectar à API. A exclusão não foi confirmada.";
+        }
+        catch (TaskCanceledException)
+        {
+            _deleteError = "A exclusão não foi confirmada. Atualize a lista antes de tentar novamente.";
+        }
+        finally
+        {
+            _deletingId = null;
+        }
+    }
+
+    private string GetSectorName(Guid assessmentId) =>
+        _diagnosis?.Assessments.FirstOrDefault(assessment => assessment.Id == assessmentId)?.SectorNameSnapshot
+        ?? "Setor avaliado";
+
+    private static string GetCategoryLabel(string category) =>
+        CategoryLabels.GetValueOrDefault(category, "Categoria indisponível");
+
+    private static string GetStatusLabel(string status) => status switch
+    {
+        "Draft" => "Rascunho",
+        "InProgress" => "Em andamento",
+        "Completed" => "Concluído",
+        _ => "Status indisponível"
+    };
+}

@@ -1,0 +1,654 @@
+@page "/diagnoses/{DiagnosisId:guid}/phases"
+@using System.Net
+@using System.Net.Http.Json
+@using Prisma.Client.Shared
+@using Prisma.Contracts.Diagnoses
+@using Prisma.Contracts.Opportunities
+@using Prisma.Contracts.Phases
+@inject HttpClient Http
+@inject IJSRuntime JS
+
+<PageTitle>@(_diagnosis?.Title ?? "Plano por fases") | Diagnóstico</PageTitle>
+
+<UnsavedChangesGuard IsDirty="@HasUnsavedPhaseChanges" ConfirmationMessage="Há alterações de fase não salvas. Deseja sair e descartá-las?" />
+
+<section class="diagnosis-page phase-plan-page">
+    <div class="diagnosis-breadcrumbs">
+        <NavLink href="/">Início</NavLink>
+        <span aria-hidden="true">/</span>
+        @if (_diagnosis is not null)
+        {
+            <NavLink href="@($"/diagnoses/{DiagnosisId}")">@_diagnosis.Title</NavLink>
+            <span aria-hidden="true">/</span>
+        }
+        <span>Plano por fases</span>
+    </div>
+
+    @if (_isLoading)
+    {
+        <div class="state-message card diagnosis-state" role="status">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            <span>Carregando fases e oportunidades…</span>
+        </div>
+    }
+    else if (_loadError is not null)
+    {
+        <div class="state-message state-error card diagnosis-state" role="alert">
+            <p>@_loadError</p>
+            <button class="btn btn-outline-primary" type="button" @onclick="LoadAsync">Tentar novamente</button>
+        </div>
+    }
+    else if (_diagnosis is not null)
+    {
+        <header class="diagnosis-page-header opportunity-page-header phase-plan-header">
+            <div>
+                <p class="eyebrow">PLANEJAMENTO</p>
+                <h1>Plano por fases</h1>
+                <p class="section-description">@_diagnosis.Title · @_diagnosis.ClientName</p>
+            </div>
+            <div class="opportunity-header-actions">
+                <span class="status-pill status-@_diagnosis.Status">@GetStatusLabel(_diagnosis.Status)</span>
+                <NavLink class="btn btn-outline-primary" href="@($"/diagnoses/{DiagnosisId}/report")">Revisar relatório</NavLink>
+                @if (!IsReadOnly)
+                {
+                    <button class="btn btn-primary" type="button" disabled="@_showNewPhaseForm" @onclick="ShowNewPhaseForm">
+                        Adicionar fase
+                    </button>
+                }
+            </div>
+        </header>
+
+        @if (IsReadOnly)
+        {
+            <div class="alert alert-info" role="status">
+                Este diagnóstico está concluído e é somente leitura. Reabra-o para alterar fases ou distribuir oportunidades.
+            </div>
+        }
+        @if (_actionError is not null)
+        {
+            <div class="alert alert-danger" role="alert">@_actionError</div>
+        }
+        @if (!string.IsNullOrWhiteSpace(_statusMessage))
+        {
+            <div class="alert alert-success" role="status">@_statusMessage</div>
+        }
+
+        @if (_showNewPhaseForm && !IsReadOnly)
+        {
+            <section class="phase-editor-card card" aria-labelledby="new-phase-heading">
+                <div class="phase-card-heading">
+                    <div>
+                        <p class="eyebrow">NOVA ETAPA</p>
+                        <h2 id="new-phase-heading">Adicionar fase</h2>
+                    </div>
+                </div>
+                <div class="phase-form-grid">
+                    <div class="form-field">
+                        <label class="form-label" for="new-phase-name">Nome da fase</label>
+                        <input id="new-phase-name" class="form-control" maxlength="120" @bind="_newPhaseName" />
+                    </div>
+                    <div class="form-field">
+                        <label class="form-label" for="new-phase-description">Descrição (opcional)</label>
+                        <textarea id="new-phase-description" class="form-control phase-description-input" maxlength="1000" @bind="_newPhaseDescription"></textarea>
+                    </div>
+                </div>
+                <div class="phase-form-actions">
+                    <span class="form-hint">A fase será adicionada ao final após confirmação da API.</span>
+                    <div class="form-actions">
+                        <button class="btn btn-outline-secondary" type="button" disabled="@_isCreatingPhase" @onclick="CancelNewPhaseAsync">Cancelar</button>
+                        <button class="btn btn-primary" type="button" disabled="@(_isCreatingPhase || string.IsNullOrWhiteSpace(_newPhaseName))" @onclick="CreatePhaseAsync">
+                            @(_isCreatingPhase ? "Salvando…" : "Salvar fase")
+                        </button>
+                    </div>
+                </div>
+            </section>
+        }
+
+        <section class="phase-list-card card" aria-labelledby="phase-list-heading">
+            <div class="phase-list-heading">
+                <div>
+                    <p class="eyebrow">SEQUÊNCIA DO TRABALHO</p>
+                    <h2 id="phase-list-heading">Fases do diagnóstico (@_phases.Count)</h2>
+                    <p class="section-description">A prioridade das oportunidades é calculada independentemente da fase escolhida.</p>
+                </div>
+                <NavLink class="btn btn-sm btn-outline-secondary" href="@($"/diagnoses/{DiagnosisId}/opportunities")">Ver prioridades</NavLink>
+            </div>
+
+            @if (_phases.Count == 0)
+            {
+                <div class="state-message compact-state phase-empty-state">
+                    <strong>Nenhuma fase cadastrada</strong>
+                    <span>Adicione uma fase para organizar as oportunidades deste diagnóstico.</span>
+                </div>
+            }
+            else
+            {
+                <ol class="phase-list">
+                    @for (var index = 0; index < _phases.Count; index++)
+                    {
+                        var phase = _phases[index];
+                        var draft = _phaseDrafts[phase.Id];
+                        var phaseOpportunities = _opportunities.Where(opportunity => opportunity.PhaseId == phase.Id).ToList();
+                        <li class="phase-list-item" @key="phase.Id">
+                            <article class="phase-card">
+                                <div class="phase-card-heading">
+                                    <span class="phase-number" aria-label="Fase @(index + 1)">@(index + 1)</span>
+                                    <div class="phase-card-copy">
+                                        @if (IsReadOnly)
+                                        {
+                                            <h3>@phase.Name</h3>
+                                            @if (!string.IsNullOrWhiteSpace(phase.Description))
+                                            {
+                                                <p>@phase.Description</p>
+                                            }
+                                        }
+                                        else
+                                        {
+                                            <div class="phase-form-grid">
+                                                <div class="form-field">
+                                                    <label class="form-label" for="phase-name-@phase.Id">Nome</label>
+                                                    <input id="phase-name-@phase.Id" class="form-control" maxlength="120" @bind="draft.Name" />
+                                                </div>
+                                                <div class="form-field">
+                                                    <label class="form-label" for="phase-description-@phase.Id">Descrição (opcional)</label>
+                                                    <textarea id="phase-description-@phase.Id" class="form-control phase-description-input" maxlength="1000" @bind="draft.Description"></textarea>
+                                                </div>
+                                            </div>
+                                        }
+                                    </div>
+                                    @if (!IsReadOnly)
+                                    {
+                                        <div class="phase-reorder-actions" aria-label="Reordenar fase">
+                                            <button class="btn btn-sm btn-outline-secondary" type="button" title="Mover para cima" aria-label="Mover fase @phase.Name para cima"
+                                                    disabled="@(index == 0 || _isReordering || _savingPhaseId.HasValue)" @onclick="() => MovePhaseAsync(index, -1)">↑</button>
+                                            <button class="btn btn-sm btn-outline-secondary" type="button" title="Mover para baixo" aria-label="Mover fase @phase.Name para baixo"
+                                                    disabled="@(index == _phases.Count - 1 || _isReordering || _savingPhaseId.HasValue)" @onclick="() => MovePhaseAsync(index, 1)">↓</button>
+                                        </div>
+                                    }
+                                </div>
+
+                                @if (!IsReadOnly)
+                                {
+                                    <div class="phase-card-save-row">
+                                        <span class="form-hint">Alterações no nome e na descrição só são gravadas ao salvar.</span>
+                                        <button class="btn btn-sm btn-outline-primary" type="button"
+                                                disabled="@(_savingPhaseId.HasValue || _isReordering || string.IsNullOrWhiteSpace(draft.Name))"
+                                                @onclick="() => SavePhaseAsync(phase.Id)">
+                                            @(_savingPhaseId == phase.Id ? "Salvando…" : "Salvar fase")
+                                        </button>
+                                    </div>
+                                }
+
+                                <div class="phase-opportunity-section">
+                                    <div class="phase-opportunity-heading">
+                                        <h4>Oportunidades nesta fase</h4>
+                                        <span class="count-badge">@phaseOpportunities.Count</span>
+                                    </div>
+                                    @if (phaseOpportunities.Count == 0)
+                                    {
+                                        <p class="phase-empty-inline">Nenhuma oportunidade distribuída nesta fase.</p>
+                                    }
+                                    else
+                                    {
+                                        <div class="phase-opportunity-list">
+                                            @foreach (var opportunity in phaseOpportunities)
+                                            {
+                                                <div class="phase-opportunity-row" @key="opportunity.Id">
+                                                    <div>
+                                                        <strong>@opportunity.Title</strong>
+                                                        <span>Prioridade @opportunity.PriorityScore</span>
+                                                    </div>
+                                                    <label class="visually-hidden" for="phase-select-@opportunity.Id">Fase de @opportunity.Title</label>
+                                                    <select id="phase-select-@opportunity.Id" class="form-select phase-opportunity-select"
+                                                            value="@GetPhaseValue(opportunity.PhaseId)" disabled="@(IsReadOnly || _updatingOpportunityId.HasValue)"
+                                                            @onchange="args => UpdateOpportunityPhaseAsync(opportunity, args)">
+                                                        @foreach (var option in _phases)
+                                                        {
+                                                            <option value="@option.Id">@option.Name</option>
+                                                        }
+                                                        <option value="">Sem fase</option>
+                                                    </select>
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            </article>
+                        </li>
+                    }
+                </ol>
+            }
+        </section>
+
+        <section class="phase-unallocated-card card" aria-labelledby="unallocated-heading">
+            <div class="phase-list-heading">
+                <div>
+                    <p class="eyebrow">DISTRIBUIÇÃO</p>
+                    <h2 id="unallocated-heading">Oportunidades sem fase (@UnallocatedOpportunities.Count)</h2>
+                    <p class="section-description">O vínculo é opcional. Distribuir uma oportunidade não altera sua pontuação nem sua posição de prioridade.</p>
+                </div>
+            </div>
+            @if (UnallocatedOpportunities.Count == 0)
+            {
+                <p class="phase-empty-inline">Todas as oportunidades já estão em uma fase, ou ainda não há oportunidades cadastradas.</p>
+            }
+            else
+            {
+                <div class="phase-opportunity-list">
+                    @foreach (var opportunity in UnallocatedOpportunities)
+                    {
+                        <div class="phase-opportunity-row" @key="opportunity.Id">
+                            <div>
+                                <strong>@opportunity.Title</strong>
+                                <span>Prioridade @opportunity.PriorityScore</span>
+                            </div>
+                            <label class="visually-hidden" for="unallocated-select-@opportunity.Id">Escolher fase para @opportunity.Title</label>
+                            <select id="unallocated-select-@opportunity.Id" class="form-select phase-opportunity-select"
+                                    value="" disabled="@(IsReadOnly || _updatingOpportunityId.HasValue)"
+                                    @onchange="args => UpdateOpportunityPhaseAsync(opportunity, args)">
+                                <option value="">Manter sem fase</option>
+                                @foreach (var option in _phases)
+                                {
+                                    <option value="@option.Id">Mover para @option.Name</option>
+                                }
+                            </select>
+                        </div>
+                    }
+                </div>
+            }
+        </section>
+    }
+</section>
+
+@code {
+    [Parameter] public Guid DiagnosisId { get; set; }
+
+    private DiagnosisContract? _diagnosis;
+    private List<PhaseContract> _phases = [];
+    private List<OpportunityContract> _opportunities = [];
+    private Dictionary<Guid, PhaseDraft> _phaseDrafts = [];
+    private string _newPhaseName = string.Empty;
+    private string _newPhaseDescription = string.Empty;
+    private string? _loadError;
+    private string? _actionError;
+    private string? _statusMessage;
+    private Guid? _savingPhaseId;
+    private Guid? _updatingOpportunityId;
+    private bool _showNewPhaseForm;
+    private bool _isLoading;
+    private bool _isCreatingPhase;
+    private bool _isReordering;
+
+    private bool IsReadOnly => _diagnosis?.Status == "Completed";
+    private List<OpportunityContract> UnallocatedOpportunities =>
+        _opportunities.Where(opportunity => opportunity.PhaseId is null).ToList();
+    private bool HasUnsavedPhaseChanges
+    {
+        get
+        {
+            if (IsReadOnly)
+            {
+                return false;
+            }
+
+            if (_showNewPhaseForm && (_newPhaseName.Length > 0 || _newPhaseDescription.Length > 0))
+            {
+                return true;
+            }
+
+            return _phases.Any(phase =>
+                _phaseDrafts.TryGetValue(phase.Id, out var draft) &&
+                (!string.Equals(draft.Name, phase.Name, StringComparison.Ordinal) ||
+                 !string.Equals(draft.Description, phase.Description ?? string.Empty, StringComparison.Ordinal)));
+        }
+    }
+
+    protected override Task OnParametersSetAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _isLoading = true;
+        _loadError = null;
+        _actionError = null;
+        _statusMessage = null;
+        _diagnosis = null;
+        _phases = [];
+        _opportunities = [];
+        _phaseDrafts = [];
+        try
+        {
+            using var diagnosisResponse = await Http.GetAsync($"api/diagnoses/{DiagnosisId}");
+            if (diagnosisResponse.StatusCode == HttpStatusCode.NotFound)
+            {
+                _loadError = "O diagnóstico não foi encontrado.";
+                return;
+            }
+            if (!diagnosisResponse.IsSuccessStatusCode)
+            {
+                _loadError = "Não foi possível carregar o diagnóstico. Tente novamente.";
+                return;
+            }
+
+            var diagnosis = await diagnosisResponse.Content.ReadFromJsonAsync<DiagnosisContract>();
+            if (diagnosis is null)
+            {
+                _loadError = "A API não retornou os dados do diagnóstico.";
+                return;
+            }
+
+            using var phaseResponse = await Http.GetAsync($"api/diagnoses/{DiagnosisId}/phases");
+            using var opportunityResponse = await Http.GetAsync($"api/diagnoses/{DiagnosisId}/opportunities");
+            if (!phaseResponse.IsSuccessStatusCode || !opportunityResponse.IsSuccessStatusCode)
+            {
+                _loadError = "Não foi possível carregar o plano de fases. Tente novamente.";
+                return;
+            }
+
+            var phases = await phaseResponse.Content.ReadFromJsonAsync<List<PhaseContract>>() ?? [];
+            var opportunities = await opportunityResponse.Content.ReadFromJsonAsync<List<OpportunityContract>>() ?? [];
+            _diagnosis = diagnosis;
+            _phases = phases.OrderBy(phase => phase.SortOrder).ToList();
+            _opportunities = opportunities;
+            _phaseDrafts = _phases.ToDictionary(
+                phase => phase.Id,
+                phase => new PhaseDraft { Name = phase.Name, Description = phase.Description ?? string.Empty });
+        }
+        catch (HttpRequestException)
+        {
+            _loadError = "Não foi possível conectar à API. Verifique o serviço e tente novamente.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _loadError = "A resposta da API não pôde ser lida. Tente novamente.";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void ShowNewPhaseForm()
+    {
+        _actionError = null;
+        _statusMessage = null;
+        _newPhaseName = string.Empty;
+        _newPhaseDescription = string.Empty;
+        _showNewPhaseForm = true;
+    }
+
+    private async Task CancelNewPhaseAsync()
+    {
+        if (_newPhaseName.Length > 0 || _newPhaseDescription.Length > 0)
+        {
+            var shouldDiscard = await JS.InvokeAsync<bool>("confirm", "Descartar o nome e a descrição desta fase?");
+            if (!shouldDiscard)
+            {
+                return;
+            }
+        }
+
+        _showNewPhaseForm = false;
+        _newPhaseName = string.Empty;
+        _newPhaseDescription = string.Empty;
+    }
+
+    private async Task CreatePhaseAsync()
+    {
+        if (IsReadOnly || _isCreatingPhase || string.IsNullOrWhiteSpace(_newPhaseName))
+        {
+            return;
+        }
+
+        _isCreatingPhase = true;
+        _actionError = null;
+        _statusMessage = null;
+        try
+        {
+            using var response = await Http.PostAsJsonAsync(
+                $"api/diagnoses/{DiagnosisId}/phases",
+                new PhaseInput(_newPhaseName, _newPhaseDescription));
+            if (!response.IsSuccessStatusCode)
+            {
+                _actionError = response.StatusCode == HttpStatusCode.Conflict
+                    ? "Reabra o diagnóstico antes de adicionar uma fase."
+                    : "Não foi possível salvar a fase. Revise os dados e tente novamente.";
+                return;
+            }
+
+            var saved = await response.Content.ReadFromJsonAsync<PhaseContract>();
+            if (saved is null)
+            {
+                _actionError = "A API não confirmou os dados da fase salva. Atualize a página antes de continuar.";
+                return;
+            }
+
+            _phases.Add(saved);
+            _phaseDrafts[saved.Id] = new PhaseDraft { Name = saved.Name, Description = saved.Description ?? string.Empty };
+            _showNewPhaseForm = false;
+            _newPhaseName = string.Empty;
+            _newPhaseDescription = string.Empty;
+            _statusMessage = "Fase salva.";
+        }
+        catch (HttpRequestException)
+        {
+            _actionError = "Não foi possível conectar à API. A fase não foi confirmada como salva.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _actionError = "A resposta da API não pôde ser lida. Atualize a página para confirmar o estado salvo.";
+        }
+        finally
+        {
+            _isCreatingPhase = false;
+        }
+    }
+
+    private async Task SavePhaseAsync(Guid phaseId)
+    {
+        if (IsReadOnly || _savingPhaseId.HasValue || _isReordering || !_phaseDrafts.TryGetValue(phaseId, out var draft) ||
+            string.IsNullOrWhiteSpace(draft.Name))
+        {
+            return;
+        }
+
+        _savingPhaseId = phaseId;
+        _actionError = null;
+        _statusMessage = null;
+        try
+        {
+            using var response = await Http.PutAsJsonAsync(
+                $"api/diagnoses/{DiagnosisId}/phases/{phaseId}",
+                new PhaseInput(draft.Name, draft.Description));
+            if (!response.IsSuccessStatusCode)
+            {
+                _actionError = response.StatusCode == HttpStatusCode.Conflict
+                    ? "Reabra o diagnóstico antes de editar fases."
+                    : "Não foi possível atualizar a fase. Revise os dados e tente novamente.";
+                return;
+            }
+
+            var saved = await response.Content.ReadFromJsonAsync<PhaseContract>();
+            if (saved is null)
+            {
+                _actionError = "A API não confirmou os dados da fase atualizada. Atualize a página antes de continuar.";
+                return;
+            }
+
+            ReplacePhase(saved);
+            _phaseDrafts[saved.Id] = new PhaseDraft { Name = saved.Name, Description = saved.Description ?? string.Empty };
+            _statusMessage = "Alterações da fase salvas.";
+        }
+        catch (HttpRequestException)
+        {
+            _actionError = "Não foi possível conectar à API. As alterações da fase não foram confirmadas como salvas.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _actionError = "A resposta da API não pôde ser lida. Atualize a página para confirmar o estado salvo.";
+        }
+        finally
+        {
+            _savingPhaseId = null;
+        }
+    }
+
+    private async Task MovePhaseAsync(int index, int offset)
+    {
+        if (IsReadOnly || _isReordering || _savingPhaseId.HasValue)
+        {
+            return;
+        }
+
+        var targetIndex = index + offset;
+        if (targetIndex < 0 || targetIndex >= _phases.Count)
+        {
+            return;
+        }
+
+        var reordered = _phases.ToList();
+        (reordered[index], reordered[targetIndex]) = (reordered[targetIndex], reordered[index]);
+        _isReordering = true;
+        _actionError = null;
+        _statusMessage = null;
+        try
+        {
+            using var response = await Http.PutAsJsonAsync(
+                $"api/diagnoses/{DiagnosisId}/phases/order",
+                new PhaseOrderInput(reordered.Select(phase => phase.Id).ToArray()));
+            if (!response.IsSuccessStatusCode)
+            {
+                _actionError = response.StatusCode == HttpStatusCode.Conflict
+                    ? "Reabra o diagnóstico antes de reordenar fases."
+                    : "Não foi possível salvar a nova ordem das fases.";
+                return;
+            }
+
+            var savedOrder = await response.Content.ReadFromJsonAsync<List<PhaseContract>>();
+            if (savedOrder is null || savedOrder.Count != _phases.Count)
+            {
+                _actionError = "A API não confirmou a ordem completa das fases. Atualize a página antes de continuar.";
+                return;
+            }
+
+            _phases = savedOrder.OrderBy(phase => phase.SortOrder).ToList();
+            _statusMessage = "Ordem das fases salva.";
+        }
+        catch (HttpRequestException)
+        {
+            _actionError = "Não foi possível conectar à API. A nova ordem não foi confirmada como salva.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _actionError = "A resposta da API não pôde ser lida. Atualize a página para confirmar a ordem salva.";
+        }
+        finally
+        {
+            _isReordering = false;
+        }
+    }
+
+    private async Task UpdateOpportunityPhaseAsync(OpportunityContract opportunity, ChangeEventArgs args)
+    {
+        if (IsReadOnly || _updatingOpportunityId.HasValue)
+        {
+            return;
+        }
+
+        var selectedValue = args.Value?.ToString();
+        Guid? phaseId = null;
+        if (!string.IsNullOrWhiteSpace(selectedValue))
+        {
+            if (!Guid.TryParse(selectedValue, out var parsedId) || _phases.All(phase => phase.Id != parsedId))
+            {
+                _actionError = "Selecione uma fase válida deste diagnóstico.";
+                return;
+            }
+            phaseId = parsedId;
+        }
+
+        if (phaseId == opportunity.PhaseId)
+        {
+            return;
+        }
+
+        _updatingOpportunityId = opportunity.Id;
+        _actionError = null;
+        _statusMessage = null;
+        try
+        {
+            var input = new OpportunityInput(
+                opportunity.Title,
+                opportunity.SolutionDescription,
+                opportunity.Type,
+                opportunity.ExpectedBenefit,
+                opportunity.Impact,
+                opportunity.Effort,
+                opportunity.Urgency,
+                opportunity.Dependencies,
+                opportunity.AiDataNeeds,
+                opportunity.NeedsHumanReview,
+                phaseId,
+                opportunity.BottleneckIds);
+            using var response = await Http.PutAsJsonAsync(
+                $"api/diagnoses/{DiagnosisId}/opportunities/{opportunity.Id}", input);
+            if (!response.IsSuccessStatusCode)
+            {
+                _actionError = response.StatusCode == HttpStatusCode.Conflict
+                    ? "Reabra o diagnóstico antes de distribuir oportunidades."
+                    : "Não foi possível atualizar a fase da oportunidade. Os dados originais foram mantidos.";
+                return;
+            }
+
+            var saved = await response.Content.ReadFromJsonAsync<OpportunityContract>();
+            if (saved is null || saved.Id != opportunity.Id || saved.PhaseId != phaseId)
+            {
+                _actionError = "A API não confirmou a fase escolhida. Atualize a página antes de continuar.";
+                return;
+            }
+
+            var opportunityIndex = _opportunities.FindIndex(candidate => candidate.Id == saved.Id);
+            if (opportunityIndex >= 0)
+            {
+                _opportunities[opportunityIndex] = saved;
+            }
+            _statusMessage = phaseId.HasValue ? "Oportunidade distribuída na fase." : "Oportunidade mantida sem fase.";
+        }
+        catch (HttpRequestException)
+        {
+            _actionError = "Não foi possível conectar à API. A alteração da oportunidade não foi confirmada como salva.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _actionError = "A resposta da API não pôde ser lida. Atualize a página para confirmar a distribuição salva.";
+        }
+        finally
+        {
+            _updatingOpportunityId = null;
+        }
+    }
+
+    private void ReplacePhase(PhaseContract saved)
+    {
+        var index = _phases.FindIndex(phase => phase.Id == saved.Id);
+        if (index >= 0)
+        {
+            _phases[index] = saved;
+        }
+    }
+
+    private static string GetPhaseValue(Guid? phaseId) => phaseId?.ToString() ?? string.Empty;
+
+    private static string GetStatusLabel(string status) => status switch
+    {
+        "Draft" => "Rascunho",
+        "InProgress" => "Em andamento",
+        "Completed" => "Concluído",
+        _ => status
+    };
+
+    private sealed class PhaseDraft
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Description { get; set; } = string.Empty;
+    }
+}

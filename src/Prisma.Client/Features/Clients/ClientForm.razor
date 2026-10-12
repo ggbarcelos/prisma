@@ -1,0 +1,263 @@
+@using System.ComponentModel.DataAnnotations
+@using System.Net.Http.Json
+@using Microsoft.AspNetCore.Components.Routing
+@using Prisma.Contracts.Clients
+@implements IDisposable
+@inject HttpClient Http
+@inject IJSRuntime JS
+
+<NavigationLock ConfirmExternalNavigation="_hasUnsavedChanges" OnBeforeInternalNavigation="ConfirmInternalNavigationAsync" />
+
+<section class="form-card card" aria-labelledby="client-form-heading">
+    <div class="form-card-heading">
+        <div>
+            <p class="eyebrow">CADASTRO DE CLIENTE</p>
+            <h2 id="client-form-heading">@(Client is null ? "Novo cliente" : "Editar cliente")</h2>
+            <p class="section-description">Os dados serão usados nos próximos diagnósticos.</p>
+        </div>
+        <button type="button" class="btn-close" aria-label="Fechar formulário" @onclick="CancelAsync" disabled="@_isSaving"></button>
+    </div>
+
+    @if (_saveError is not null)
+    {
+        <div class="alert alert-danger" role="alert">@_saveError</div>
+    }
+
+    <EditForm EditContext="_editContext" OnValidSubmit="SaveAsync">
+        <DataAnnotationsValidator />
+        <ValidationSummary class="validation-summary" />
+
+        <fieldset disabled="@_isSaving" class="form-fields">
+            <div class="form-grid">
+                <div class="form-field form-field-wide">
+                    <label class="form-label" for="client-company-name">Nome da empresa <span class="required-mark">*</span></label>
+                    <InputText id="client-company-name" class="form-control" @bind-Value="_model.CompanyName" autocomplete="organization" maxlength="200" />
+                    <ValidationMessage For="@(() => _model.CompanyName)" />
+                </div>
+                <div class="form-field">
+                    <label class="form-label" for="client-segment">Segmento <span class="required-mark">*</span></label>
+                    <InputText id="client-segment" class="form-control" @bind-Value="_model.Segment" autocomplete="organization-title" maxlength="120" />
+                    <ValidationMessage For="@(() => _model.Segment)" />
+                </div>
+                <div class="form-field">
+                    <label class="form-label" for="client-contact-name">Nome do contato</label>
+                    <InputText id="client-contact-name" class="form-control" @bind-Value="_model.ContactName" autocomplete="name" maxlength="160" />
+                    <ValidationMessage For="@(() => _model.ContactName)" />
+                </div>
+                <div class="form-field">
+                    <label class="form-label" for="client-email">E-mail</label>
+                    <InputText id="client-email" class="form-control" type="email" @bind-Value="_model.Email" autocomplete="email" maxlength="254" />
+                    <ValidationMessage For="@(() => _model.Email)" />
+                </div>
+                <div class="form-field">
+                    <label class="form-label" for="client-phone">Telefone</label>
+                    <InputText id="client-phone" class="form-control" type="tel" @bind-Value="_model.Phone" autocomplete="tel" maxlength="40" />
+                    <ValidationMessage For="@(() => _model.Phone)" />
+                </div>
+                <div class="form-field form-field-wide">
+                    <label class="form-label" for="client-notes">Observações</label>
+                    <InputTextArea id="client-notes" class="form-control notes-input" @bind-Value="_model.Notes" rows="4" maxlength="4000" />
+                    <ValidationMessage For="@(() => _model.Notes)" />
+                </div>
+            </div>
+        </fieldset>
+
+        <div class="form-footer">
+            <p class="form-hint"><span class="required-mark">*</span> Campos obrigatórios</p>
+            <div class="form-actions">
+                <button type="button" class="btn btn-outline-secondary" @onclick="CancelAsync" disabled="@_isSaving">Cancelar</button>
+                <button type="submit" class="btn btn-primary" disabled="@_isSaving">
+                    @if (_isSaving)
+                    {
+                        <span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>
+                        <span>Salvando…</span>
+                    }
+                    else
+                    {
+                        <span>Salvar cliente</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </EditForm>
+</section>
+
+@code {
+    [Parameter] public ClientContract? Client { get; set; }
+    [Parameter] public EventCallback<ClientContract> OnSaved { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private ClientFormModel _model = new();
+    private EditContext _editContext = default!;
+    private Guid? _sourceClientId;
+    private bool _initialized;
+    private bool _hasUnsavedChanges;
+    private bool _isSaving;
+    private string? _saveError;
+
+    protected override void OnParametersSet()
+    {
+        if (_initialized && _sourceClientId == Client?.Id)
+        {
+            return;
+        }
+
+        if (_editContext is not null)
+        {
+            _editContext.OnFieldChanged -= HandleFieldChanged;
+        }
+
+        _sourceClientId = Client?.Id;
+        _model = Client is null
+            ? new ClientFormModel()
+            : new ClientFormModel
+            {
+                CompanyName = Client.CompanyName,
+                Segment = Client.Segment,
+                ContactName = Client.ContactName ?? string.Empty,
+                Email = Client.Email ?? string.Empty,
+                Phone = Client.Phone ?? string.Empty,
+                Notes = Client.Notes ?? string.Empty
+            };
+
+        _editContext = new EditContext(_model);
+        _editContext.OnFieldChanged += HandleFieldChanged;
+        _hasUnsavedChanges = false;
+        _saveError = null;
+        _initialized = true;
+    }
+
+    private void HandleFieldChanged(object? sender, FieldChangedEventArgs args)
+    {
+        _hasUnsavedChanges = true;
+        _saveError = null;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_isSaving)
+        {
+            return;
+        }
+
+        _isSaving = true;
+        _saveError = null;
+        try
+        {
+            var input = new ClientInput(
+                _model.CompanyName,
+                _model.Segment,
+                NormalizeOptional(_model.ContactName),
+                NormalizeOptional(_model.Email),
+                NormalizeOptional(_model.Phone),
+                NormalizeOptional(_model.Notes));
+
+            using var response = Client is null
+                ? await Http.PostAsJsonAsync("api/clients", input)
+                : await Http.PutAsJsonAsync($"api/clients/{Client.Id}", input);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _saveError = GetSaveError(response.StatusCode);
+                return;
+            }
+
+            var savedClient = await response.Content.ReadFromJsonAsync<ClientContract>();
+            if (savedClient is null)
+            {
+                _saveError = "A API não confirmou os dados salvos. Mantenha o formulário aberto e tente novamente.";
+                return;
+            }
+
+            _hasUnsavedChanges = false;
+            await OnSaved.InvokeAsync(savedClient);
+        }
+        catch (HttpRequestException)
+        {
+            _saveError = "Não foi possível conectar à API. Seus dados continuam neste formulário; tente salvar novamente.";
+        }
+        catch (TaskCanceledException)
+        {
+            _saveError = "Não foi possível confirmar o salvamento. Seus dados continuam neste formulário; tente novamente.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _saveError = "A resposta da API não confirmou o salvamento. Seus dados continuam neste formulário.";
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task CancelAsync()
+    {
+        if (await ConfirmLeaveAsync())
+        {
+            await OnCancel.InvokeAsync();
+        }
+    }
+
+    private async Task ConfirmInternalNavigationAsync(LocationChangingContext context)
+    {
+        if (!await ConfirmLeaveAsync())
+        {
+            context.PreventNavigation();
+        }
+    }
+
+    private async Task<bool> ConfirmLeaveAsync()
+    {
+        if (!_hasUnsavedChanges)
+        {
+            return true;
+        }
+
+        var shouldLeave = await JS.InvokeAsync<bool>(
+            "confirm",
+            "Há alterações não salvas. Deseja sair e descartar essas alterações?");
+        if (shouldLeave)
+        {
+            _hasUnsavedChanges = false;
+        }
+
+        return shouldLeave;
+    }
+
+    private static string GetSaveError(System.Net.HttpStatusCode statusCode) => statusCode switch
+    {
+        System.Net.HttpStatusCode.BadRequest => "Revise os campos informados e tente novamente.",
+        System.Net.HttpStatusCode.NotFound => "Este cliente não foi encontrado. Atualize a lista e tente novamente.",
+        System.Net.HttpStatusCode.Conflict => "Não foi possível salvar este cliente. Revise os dados e tente novamente.",
+        _ => "Não foi possível salvar o cliente. Seus dados continuam neste formulário; tente novamente."
+    };
+
+    private static string? NormalizeOptional(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    public void Dispose()
+    {
+        if (_editContext is not null)
+        {
+            _editContext.OnFieldChanged -= HandleFieldChanged;
+        }
+    }
+
+    private sealed class ClientFormModel
+    {
+        [Required(ErrorMessage = "Informe o nome da empresa.")]
+        public string CompanyName { get; set; } = string.Empty;
+
+        [Required(ErrorMessage = "Informe o segmento.")]
+        public string Segment { get; set; } = string.Empty;
+
+        public string ContactName { get; set; } = string.Empty;
+
+        [EmailAddress(ErrorMessage = "Informe um e-mail válido.")]
+        public string Email { get; set; } = string.Empty;
+
+        public string Phone { get; set; } = string.Empty;
+
+        public string Notes { get; set; } = string.Empty;
+    }
+}

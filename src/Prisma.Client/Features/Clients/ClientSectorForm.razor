@@ -1,0 +1,263 @@
+@using System.ComponentModel.DataAnnotations
+@using System.Net.Http.Json
+@using Microsoft.AspNetCore.Components.Routing
+@using Prisma.Contracts.Clients
+@implements IDisposable
+@inject HttpClient Http
+@inject IJSRuntime JS
+
+<NavigationLock ConfirmExternalNavigation="_hasUnsavedChanges" OnBeforeInternalNavigation="ConfirmInternalNavigationAsync" />
+
+<section class="sector-form-panel" aria-labelledby="sector-form-heading">
+    <div class="form-card-heading sector-form-heading">
+        <div>
+            <p class="eyebrow">SETOR DE @_clientName.ToUpperInvariant()</p>
+            <h3 id="sector-form-heading">@(Sector is null ? "Novo setor" : "Editar setor")</h3>
+            <p class="section-description">Escolha uma sugestão ou escreva um nome personalizado.</p>
+        </div>
+        <button type="button" class="btn-close" aria-label="Fechar formulário" @onclick="CancelAsync" disabled="@_isSaving"></button>
+    </div>
+
+    @if (_saveError is not null)
+    {
+        <div class="alert alert-danger" role="alert">@_saveError</div>
+    }
+
+    <EditForm EditContext="_editContext" OnValidSubmit="SaveAsync">
+        <DataAnnotationsValidator />
+        <ValidationSummary class="validation-summary" />
+
+        <fieldset disabled="@_isSaving" class="form-fields">
+            <div class="suggestion-group">
+                <span class="form-label">Sugestões</span>
+                <div class="suggestion-chips" aria-label="Sugestões de setor">
+                    @foreach (var suggestion in SectorSuggestions)
+                    {
+                        <button type="button"
+                                class="suggestion-chip @(_model.Name.Equals(suggestion, StringComparison.OrdinalIgnoreCase) ? "active" : string.Empty)"
+                                aria-pressed="@(_model.Name.Equals(suggestion, StringComparison.OrdinalIgnoreCase) ? "true" : "false")"
+                                @onclick="() => UseSuggestion(suggestion)">@suggestion</button>
+                    }
+                </div>
+            </div>
+
+            <div class="form-field">
+                <label class="form-label" for="sector-name">Nome do setor <span class="required-mark">*</span></label>
+                <InputText id="sector-name" class="form-control" @bind-Value="_model.Name" autocomplete="off" maxlength="160" />
+                <ValidationMessage For="@(() => _model.Name)" />
+            </div>
+
+            <div class="form-grid sector-fields-grid">
+                <div class="form-field">
+                    <label class="form-label" for="sector-responsible">Responsável</label>
+                    <InputText id="sector-responsible" class="form-control" @bind-Value="_model.ResponsibleName" autocomplete="name" maxlength="160" />
+                    <ValidationMessage For="@(() => _model.ResponsibleName)" />
+                </div>
+                <div class="form-field">
+                    <label class="form-label" for="sector-people-count">Quantidade de pessoas</label>
+                    <InputNumber id="sector-people-count" class="form-control" @bind-Value="_model.PeopleCount" min="0" />
+                    <ValidationMessage For="@(() => _model.PeopleCount)" />
+                </div>
+            </div>
+        </fieldset>
+
+        <div class="form-footer">
+            <p class="form-hint"><span class="required-mark">*</span> Somente o nome é obrigatório</p>
+            <div class="form-actions">
+                <button type="button" class="btn btn-outline-secondary" @onclick="CancelAsync" disabled="@_isSaving">Cancelar</button>
+                <button type="submit" class="btn btn-primary" disabled="@_isSaving">
+                    @if (_isSaving)
+                    {
+                        <span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>
+                        <span>Salvando…</span>
+                    }
+                    else
+                    {
+                        <span>Salvar setor</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </EditForm>
+</section>
+
+@code {
+    private static readonly string[] SectorSuggestions = ["Comercial", "Financeiro", "Atendimento", "Operação", "Administrativo"];
+
+    [Parameter] public Guid ClientId { get; set; }
+    [Parameter] public string ClientName { get; set; } = string.Empty;
+    [Parameter] public ClientSectorContract? Sector { get; set; }
+    [Parameter] public EventCallback<ClientSectorContract> OnSaved { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private SectorFormModel _model = new();
+    private EditContext _editContext = default!;
+    private Guid? _sourceSectorId;
+    private Guid _sourceClientId;
+    private string _clientName = string.Empty;
+    private bool _initialized;
+    private bool _hasUnsavedChanges;
+    private bool _isSaving;
+    private string? _saveError;
+
+    protected override void OnParametersSet()
+    {
+        _clientName = ClientName;
+        if (_initialized && _sourceSectorId == Sector?.Id && _sourceClientId == ClientId)
+        {
+            return;
+        }
+
+        if (_editContext is not null)
+        {
+            _editContext.OnFieldChanged -= HandleFieldChanged;
+        }
+
+        _sourceSectorId = Sector?.Id;
+        _sourceClientId = ClientId;
+        _model = Sector is null
+            ? new SectorFormModel()
+            : new SectorFormModel
+            {
+                Name = Sector.Name,
+                ResponsibleName = Sector.ResponsibleName ?? string.Empty,
+                PeopleCount = Sector.PeopleCount
+            };
+
+        _editContext = new EditContext(_model);
+        _editContext.OnFieldChanged += HandleFieldChanged;
+        _hasUnsavedChanges = false;
+        _saveError = null;
+        _initialized = true;
+    }
+
+    private void HandleFieldChanged(object? sender, FieldChangedEventArgs args)
+    {
+        _hasUnsavedChanges = true;
+        _saveError = null;
+    }
+
+    private void UseSuggestion(string suggestion)
+    {
+        _model.Name = suggestion;
+        _editContext.NotifyFieldChanged(_editContext.Field(nameof(SectorFormModel.Name)));
+        _editContext.Validate();
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_isSaving)
+        {
+            return;
+        }
+
+        _isSaving = true;
+        _saveError = null;
+        try
+        {
+            var input = new ClientSectorInput(
+                _model.Name,
+                NormalizeOptional(_model.ResponsibleName),
+                _model.PeopleCount);
+
+            using var response = Sector is null
+                ? await Http.PostAsJsonAsync($"api/clients/{ClientId}/sectors", input)
+                : await Http.PutAsJsonAsync($"api/clients/{ClientId}/sectors/{Sector.Id}", input);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _saveError = GetSaveError(response.StatusCode);
+                return;
+            }
+
+            var savedSector = await response.Content.ReadFromJsonAsync<ClientSectorContract>();
+            if (savedSector is null)
+            {
+                _saveError = "A API não confirmou os dados salvos. Mantenha o formulário aberto e tente novamente.";
+                return;
+            }
+
+            _hasUnsavedChanges = false;
+            await OnSaved.InvokeAsync(savedSector);
+        }
+        catch (HttpRequestException)
+        {
+            _saveError = "Não foi possível conectar à API. Seus dados continuam neste formulário; tente salvar novamente.";
+        }
+        catch (TaskCanceledException)
+        {
+            _saveError = "Não foi possível confirmar o salvamento. Seus dados continuam neste formulário; tente novamente.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _saveError = "A resposta da API não confirmou o salvamento. Seus dados continuam neste formulário.";
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task CancelAsync()
+    {
+        if (await ConfirmLeaveAsync())
+        {
+            await OnCancel.InvokeAsync();
+        }
+    }
+
+    private async Task ConfirmInternalNavigationAsync(LocationChangingContext context)
+    {
+        if (!await ConfirmLeaveAsync())
+        {
+            context.PreventNavigation();
+        }
+    }
+
+    private async Task<bool> ConfirmLeaveAsync()
+    {
+        if (!_hasUnsavedChanges)
+        {
+            return true;
+        }
+
+        var shouldLeave = await JS.InvokeAsync<bool>(
+            "confirm",
+            "Há alterações não salvas. Deseja sair e descartar essas alterações?");
+        if (shouldLeave)
+        {
+            _hasUnsavedChanges = false;
+        }
+
+        return shouldLeave;
+    }
+
+    private static string GetSaveError(System.Net.HttpStatusCode statusCode) => statusCode switch
+    {
+        System.Net.HttpStatusCode.BadRequest => "Revise os campos informados e tente novamente.",
+        System.Net.HttpStatusCode.NotFound => "O cliente ou setor não foi encontrado. Atualize a lista e tente novamente.",
+        System.Net.HttpStatusCode.Conflict => "Não foi possível salvar este setor. Revise os dados e tente novamente.",
+        _ => "Não foi possível salvar o setor. Seus dados continuam neste formulário; tente novamente."
+    };
+
+    private static string? NormalizeOptional(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    public void Dispose()
+    {
+        if (_editContext is not null)
+        {
+            _editContext.OnFieldChanged -= HandleFieldChanged;
+        }
+    }
+
+    private sealed class SectorFormModel
+    {
+        [Required(ErrorMessage = "Informe o nome do setor.")]
+        public string Name { get; set; } = string.Empty;
+
+        public string ResponsibleName { get; set; } = string.Empty;
+
+        public int? PeopleCount { get; set; }
+    }
+}

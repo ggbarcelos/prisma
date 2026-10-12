@@ -1,0 +1,129 @@
+@page "/"
+@using System.Net.Http.Json
+@using Prisma.Contracts.Diagnoses
+@inject HttpClient Http
+
+<PageTitle>Início | Diagnóstico</PageTitle>
+
+<section class="home-page">
+    <header class="home-intro">
+        <div>
+            <p class="eyebrow">ESPAÇO DO CONSULTOR</p>
+            <h1>Diagnóstico de oportunidades</h1>
+            <p class="page-description">Organize informações de clientes e acompanhe os diagnósticos de oportunidades tecnológicas.</p>
+        </div>
+        <div class="home-actions">
+            <NavLink class="btn btn-primary" href="/diagnoses/new"><span aria-hidden="true">＋</span> Novo diagnóstico</NavLink>
+            <NavLink class="btn btn-outline-primary" href="/clients">Clientes e setores</NavLink>
+        </div>
+    </header>
+
+    <section class="home-diagnoses card" aria-labelledby="recent-diagnoses-heading">
+        <div class="diagnosis-section-heading">
+            <div>
+                <p class="eyebrow">ACOMPANHAMENTO</p>
+                <h2 id="recent-diagnoses-heading">Diagnósticos recentes</h2>
+            </div>
+            @if (!_isLoading && _loadError is null)
+            {
+                <span class="count-badge">@_diagnoses.Count</span>
+            }
+        </div>
+
+        @if (_isLoading)
+        {
+            <div class="state-message" role="status">
+                <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                <span>Carregando diagnósticos…</span>
+            </div>
+        }
+        else if (_loadError is not null)
+        {
+            <div class="state-message state-error" role="alert">
+                <p>@_loadError</p>
+                <button class="btn btn-sm btn-outline-primary" type="button" @onclick="LoadAsync">Tentar novamente</button>
+            </div>
+        }
+        else if (_diagnoses.Count == 0)
+        {
+            <div class="home-empty-state">
+                <span class="workspace-empty-icon" aria-hidden="true">◎</span>
+                <h3>Nenhum diagnóstico iniciado</h3>
+                <p>Cadastre um cliente e prepare o primeiro diagnóstico.</p>
+                <div class="home-empty-actions">
+                    <NavLink class="btn btn-primary" href="/diagnoses/new">Iniciar diagnóstico</NavLink>
+                    <NavLink class="btn btn-outline-secondary" href="/clients">Cadastrar ou consultar clientes</NavLink>
+                </div>
+            </div>
+        }
+        else
+        {
+            <div class="recent-diagnosis-list">
+                @foreach (var diagnosis in _diagnoses.Take(8))
+                {
+                    <NavLink class="recent-diagnosis-item" href="@($"/diagnoses/{diagnosis.Id}")" @key="diagnosis.Id">
+                        <span class="diagnosis-list-icon" aria-hidden="true">◎</span>
+                        <span class="recent-diagnosis-copy">
+                            <strong>@diagnosis.Title</strong>
+                            <span>@diagnosis.ClientName · @diagnosis.AssessmentDate.ToString("dd/MM/yyyy")</span>
+                        </span>
+                        <span class="status-pill status-@diagnosis.Status">@GetStatusLabel(diagnosis.Status)</span>
+                        <span class="recent-diagnosis-updated">Atualizado @diagnosis.UpdatedAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")</span>
+                        <span class="client-chevron" aria-hidden="true">›</span>
+                    </NavLink>
+                }
+            </div>
+        }
+    </section>
+
+    <aside class="home-info-card card">
+        <span class="home-info-icon" aria-hidden="true">↗</span>
+        <div>
+            <h2>Dados salvos no serviço</h2>
+            <p>O aplicativo precisa estar conectado à API para salvar alterações. A tela informa quando cada gravação foi confirmada.</p>
+        </div>
+    </aside>
+</section>
+
+@code {
+    private List<DiagnosisSummaryContract> _diagnoses = [];
+    private string? _loadError;
+    private bool _isLoading;
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _isLoading = true;
+        _loadError = null;
+        try
+        {
+            var diagnoses = await Http.GetFromJsonAsync<List<DiagnosisSummaryContract>>("api/diagnoses");
+            _diagnoses = diagnoses ?? [];
+        }
+        catch (HttpRequestException)
+        {
+            _loadError = "Não foi possível conectar à API. Seus diagnósticos continuam salvos no serviço.";
+        }
+        catch (TaskCanceledException)
+        {
+            _loadError = "A resposta da API demorou mais que o esperado. Tente carregar novamente.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _loadError = "A API retornou dados que não puderam ser lidos.";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private static string GetStatusLabel(string status) => status switch
+    {
+        "Draft" => "Rascunho",
+        "InProgress" => "Em andamento",
+        "Completed" => "Concluído",
+        _ => status
+    };
+}

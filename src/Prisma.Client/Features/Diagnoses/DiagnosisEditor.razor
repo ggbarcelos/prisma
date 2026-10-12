@@ -1,0 +1,532 @@
+@page "/diagnoses/new"
+@page "/diagnoses/{DiagnosisId:guid}/edit"
+@using System.ComponentModel.DataAnnotations
+@using System.Net
+@using System.Net.Http.Json
+@using Microsoft.AspNetCore.Components.Routing
+@using Prisma.Contracts.Clients
+@using Prisma.Contracts.Diagnoses
+@implements IDisposable
+@inject HttpClient Http
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<NavigationLock ConfirmExternalNavigation="_hasUnsavedChanges" OnBeforeInternalNavigation="ConfirmInternalNavigationAsync" />
+
+<PageTitle>@(_isEditing ? "Editar diagnóstico" : "Novo diagnóstico") | Diagnóstico</PageTitle>
+
+<section class="diagnosis-page">
+    <div class="diagnosis-breadcrumbs">
+        <NavLink href="/">Início</NavLink>
+        <span aria-hidden="true">/</span>
+        @if (_isEditing && _diagnosis is not null)
+        {
+            <NavLink href="@($"/diagnoses/{_diagnosis.Id}")">@_diagnosis.Title</NavLink>
+            <span aria-hidden="true">/</span>
+            <span>Editar</span>
+        }
+        else
+        {
+            <NavLink href="/">Diagnósticos</NavLink>
+            <span aria-hidden="true">/</span>
+            <span>Novo</span>
+        }
+    </div>
+
+    @if (_isLoading)
+    {
+        <div class="state-message card diagnosis-state" role="status">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            <span>Carregando dados do diagnóstico…</span>
+        </div>
+    }
+    else if (_loadError is not null)
+    {
+        <div class="state-message state-error card diagnosis-state" role="alert">
+            <p>@_loadError</p>
+            <button class="btn btn-outline-primary" type="button" @onclick="LoadAsync">Tentar novamente</button>
+        </div>
+    }
+    else if (_isEditing && _diagnosis is null)
+    {
+        <div class="state-message card diagnosis-state" role="alert">
+            <p>O diagnóstico não foi encontrado.</p>
+            <NavLink class="btn btn-outline-primary" href="/">Voltar ao início</NavLink>
+        </div>
+    }
+    else if (_isEditing && _diagnosis?.Status == "Completed")
+    {
+        <div class="alert alert-warning" role="status">
+            Este diagnóstico está concluído e não pode ser editado até ser reaberto.
+            <NavLink class="alert-link" href="@($"/diagnoses/{_diagnosis.Id}")">Voltar ao diagnóstico</NavLink>
+        </div>
+    }
+    else if (_clients.Count == 0)
+    {
+        <div class="workspace-empty card diagnosis-state">
+            <span class="workspace-empty-icon" aria-hidden="true">◎</span>
+            <h1>Nenhum cliente cadastrado</h1>
+            <p>Cadastre um cliente antes de iniciar um diagnóstico.</p>
+            <NavLink class="btn btn-primary" href="/clients">Acessar clientes</NavLink>
+        </div>
+    }
+    else
+    {
+        <header class="diagnosis-page-header">
+            <div>
+                <p class="eyebrow">PREPARAÇÃO</p>
+                <h1>@(_isEditing ? "Editar diagnóstico" : "Novo diagnóstico")</h1>
+                <p class="page-description">Defina o cliente, o objetivo e o contexto. Os dados só serão salvos quando você confirmar.</p>
+            </div>
+            @if (_isEditing && _diagnosis is not null)
+            {
+                <span class="status-pill status-@_diagnosis.Status">@GetStatusLabel(_diagnosis.Status)</span>
+            }
+        </header>
+
+        @if (_saveError is not null)
+        {
+            <div class="alert alert-danger" role="alert">@_saveError</div>
+        }
+        @if (_formError is not null)
+        {
+            <div class="alert alert-danger" role="alert">@_formError</div>
+        }
+
+        <EditForm EditContext="_editContext" OnSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+            <ValidationSummary class="validation-summary" />
+
+            <section class="diagnosis-card card" aria-labelledby="diagnosis-data-heading">
+                <div class="diagnosis-section-heading">
+                    <div>
+                        <p class="eyebrow">DADOS DO DIAGNÓSTICO</p>
+                        <h2 id="diagnosis-data-heading">Informações iniciais</h2>
+                    </div>
+                    <span class="required-note"><span class="required-mark">*</span> Obrigatório</span>
+                </div>
+
+                <fieldset class="form-fields" disabled="@_isSaving">
+                    <div class="form-grid">
+                        <div class="form-field form-field-wide">
+                            <label class="form-label" for="diagnosis-title">Título <span class="required-mark">*</span></label>
+                            <InputText id="diagnosis-title" class="form-control" @bind-Value="_model.Title" maxlength="240" autocomplete="off" />
+                            <ValidationMessage For="@(() => _model.Title)" />
+                        </div>
+
+                        <div class="form-field">
+                            <label class="form-label" for="diagnosis-client">Cliente <span class="required-mark">*</span></label>
+                            <InputSelect id="diagnosis-client" class="form-select" disabled="@(_isSaving || _isClientLocked)" @bind-Value="_model.ClientId">
+                                <option value="">Selecione um cliente</option>
+                                @foreach (var client in _clients)
+                                {
+                                    <option value="@client.Id">@client.CompanyName</option>
+                                }
+                            </InputSelect>
+                            <ValidationMessage For="@(() => _model.ClientId)" />
+                            @if (_isEditing && _diagnosis?.Assessments.Count > 0)
+                            {
+                                <small class="form-text">O cliente fica fixo após a primeira avaliação de setor.</small>
+                            }
+                        </div>
+
+                        <div class="form-field">
+                            <label class="form-label" for="diagnosis-date">Data da avaliação <span class="required-mark">*</span></label>
+                            <InputDate id="diagnosis-date" class="form-control" @bind-Value="_model.AssessmentDate" />
+                        </div>
+
+                        <div class="form-field form-field-wide">
+                            <label class="form-label" for="diagnosis-context">Contexto inicial</label>
+                            <InputTextArea id="diagnosis-context" class="form-control notes-input" @bind-Value="_model.Context" rows="4" maxlength="4000" />
+                            <small class="form-text">Registre o contexto informado para este trabalho. Não inclua dados que não foram confirmados.</small>
+                        </div>
+                    </div>
+                </fieldset>
+            </section>
+
+            <section class="diagnosis-card card" aria-labelledby="diagnosis-objectives-heading">
+                <div class="diagnosis-section-heading">
+                    <div>
+                        <p class="eyebrow">DIREÇÃO DO TRABALHO</p>
+                        <h2 id="diagnosis-objectives-heading">Objetivos</h2>
+                        <p class="section-description">Selecione os objetivos e, se já estiver definido, indique um objetivo principal.</p>
+                    </div>
+                </div>
+
+                <fieldset class="objective-list" disabled="@_isSaving">
+                    @foreach (var objective in ObjectiveOptions)
+                    {
+                        var isSelected = _selectedObjectives.Contains(objective.Code);
+                        <div class="objective-row" @key="objective.Code">
+                            <label class="form-check objective-check" for="objective-@objective.Code">
+                                <input id="objective-@objective.Code" class="form-check-input" type="checkbox"
+                                       checked="@isSelected" @onchange="args => SetObjectiveSelected(objective.Code, args)" />
+                                <span class="form-check-label">@objective.Label</span>
+                            </label>
+                            <label class="objective-primary" for="primary-@objective.Code">
+                                <input id="primary-@objective.Code" class="form-check-input" type="radio" name="primary-objective"
+                                       checked="@(_primaryObjectiveCode == objective.Code)" disabled="@(!isSelected)"
+                                       @onchange="() => SetPrimaryObjective(objective.Code)" />
+                                <span>Principal</span>
+                            </label>
+                        </div>
+                    }
+                </fieldset>
+
+                @if (_selectedObjectives.Contains("Other"))
+                {
+                    <div class="form-field objective-other-field">
+                        <label class="form-label" for="objective-other-description">Descreva o objetivo <span class="required-mark">*</span></label>
+                        <InputText id="objective-other-description" class="form-control" @bind-Value="_model.OtherDescription" maxlength="500" />
+                        <small class="form-text">Obrigatório quando “Outro” estiver selecionado.</small>
+                    </div>
+                }
+
+                @if (_primaryObjectiveCode is null && _selectedObjectives.Count > 0)
+                {
+                    <p class="form-hint mt-3">Você pode definir o objetivo principal agora ou continuar sem ele.</p>
+                }
+            </section>
+
+            <footer class="diagnosis-form-footer">
+                <NavLink class="btn btn-outline-secondary" href="@(_isEditing && _diagnosis is not null ? $"/diagnoses/{_diagnosis.Id}" : "/")">Cancelar</NavLink>
+                <button class="btn btn-primary" type="submit" disabled="@_isSaving">
+                    @if (_isSaving)
+                    {
+                        <span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>
+                        <span>Salvando…</span>
+                    }
+                    else
+                    {
+                        <span>@(_isEditing ? "Salvar alterações" : "Salvar diagnóstico")</span>
+                    }
+                </button>
+            </footer>
+        </EditForm>
+    }
+</section>
+
+@code {
+    private static readonly ObjectiveOption[] ObjectiveOptions =
+    [
+        new("ReduceCosts", "Reduzir custos"),
+        new("ImproveProductivity", "Melhorar produtividade"),
+        new("ReduceErrorsAndRework", "Diminuir erros e retrabalho"),
+        new("ImproveService", "Melhorar atendimento"),
+        new("IncreaseSales", "Aumentar vendas"),
+        new("IntegrateInformation", "Integrar informações"),
+        new("Other", "Outro")
+    ];
+
+    [Parameter] public Guid? DiagnosisId { get; set; }
+    [SupplyParameterFromQuery] public Guid? ClientId { get; set; }
+
+    private readonly HashSet<string> _selectedObjectives = new(StringComparer.Ordinal);
+    private List<ClientContract> _clients = [];
+    private DiagnosisContract? _diagnosis;
+    private DiagnosisFormModel _model = new();
+    private EditContext _editContext = default!;
+    private string? _loadedRouteKey;
+    private string? _primaryObjectiveCode;
+    private string? _loadError;
+    private string? _saveError;
+    private string? _formError;
+    private bool _isLoading;
+    private bool _isSaving;
+    private bool _hasUnsavedChanges;
+
+    private bool _isEditing => DiagnosisId.HasValue;
+
+    private bool _isClientLocked => _isEditing && (_diagnosis?.Assessments.Count ?? 0) > 0;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var routeKey = $"{DiagnosisId}:{ClientId}";
+        if (routeKey == _loadedRouteKey)
+        {
+            return;
+        }
+
+        _loadedRouteKey = routeKey;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _isLoading = true;
+        _loadError = null;
+        _saveError = null;
+        _formError = null;
+        try
+        {
+            var clients = await Http.GetFromJsonAsync<List<ClientContract>>("api/clients");
+            _clients = clients ?? [];
+            _diagnosis = null;
+            _selectedObjectives.Clear();
+            _primaryObjectiveCode = null;
+            _model = new DiagnosisFormModel
+            {
+                ClientId = ClientId,
+                AssessmentDate = DateOnly.FromDateTime(DateTime.Today)
+            };
+
+            if (DiagnosisId is Guid diagnosisId)
+            {
+                _diagnosis = await Http.GetFromJsonAsync<DiagnosisContract>($"api/diagnoses/{diagnosisId}");
+                if (_diagnosis is not null)
+                {
+                    _model = new DiagnosisFormModel
+                    {
+                        ClientId = _diagnosis.ClientId,
+                        Title = _diagnosis.Title,
+                        AssessmentDate = _diagnosis.AssessmentDate,
+                        Context = _diagnosis.Context ?? string.Empty,
+                        OtherDescription = _diagnosis.Objectives
+                            .SingleOrDefault(objective => objective.Code == "Other")?.CustomDescription ?? string.Empty
+                    };
+                    foreach (var objective in _diagnosis.Objectives)
+                    {
+                        _selectedObjectives.Add(objective.Code!);
+                        if (objective.IsPrimary)
+                        {
+                            _primaryObjectiveCode = objective.Code;
+                        }
+                    }
+                }
+            }
+
+            CreateEditContext();
+            _hasUnsavedChanges = false;
+        }
+        catch (HttpRequestException)
+        {
+            _loadError = "Não foi possível conectar à API. Confira a conexão e tente carregar novamente.";
+        }
+        catch (TaskCanceledException)
+        {
+            _loadError = "A resposta da API demorou mais que o esperado. Tente carregar novamente.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _loadError = "A API retornou dados que não puderam ser lidos.";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void CreateEditContext()
+    {
+        if (_editContext is not null)
+        {
+            _editContext.OnFieldChanged -= HandleFieldChanged;
+        }
+
+        _editContext = new EditContext(_model);
+        _editContext.OnFieldChanged += HandleFieldChanged;
+    }
+
+    private void HandleFieldChanged(object? sender, FieldChangedEventArgs args)
+    {
+        _hasUnsavedChanges = true;
+        _saveError = null;
+        _formError = null;
+    }
+
+    private void SetObjectiveSelected(string code, ChangeEventArgs args)
+    {
+        var isSelected = bool.TryParse(args.Value?.ToString(), out var value) && value;
+        if (isSelected)
+        {
+            _selectedObjectives.Add(code);
+        }
+        else
+        {
+            _selectedObjectives.Remove(code);
+            if (_primaryObjectiveCode == code)
+            {
+                _primaryObjectiveCode = null;
+            }
+        }
+
+        _hasUnsavedChanges = true;
+        _saveError = null;
+        _formError = null;
+    }
+
+    private void SetPrimaryObjective(string code)
+    {
+        if (!_selectedObjectives.Contains(code))
+        {
+            return;
+        }
+
+        _primaryObjectiveCode = code;
+        _hasUnsavedChanges = true;
+        _saveError = null;
+        _formError = null;
+    }
+
+    private async Task SaveAsync(EditContext editContext)
+    {
+        _saveError = null;
+        _formError = null;
+        if (!editContext.Validate())
+        {
+            return;
+        }
+
+        if (_model.AssessmentDate == default)
+        {
+            _formError = "Informe a data da avaliação.";
+            return;
+        }
+
+        if (_primaryObjectiveCode is not null && !_selectedObjectives.Contains(_primaryObjectiveCode))
+        {
+            _formError = "O objetivo principal precisa estar entre os objetivos selecionados.";
+            return;
+        }
+
+        if (_selectedObjectives.Contains("Other") && string.IsNullOrWhiteSpace(_model.OtherDescription))
+        {
+            _formError = "Descreva o objetivo selecionado como Outro.";
+            return;
+        }
+
+        if (_isSaving || _model.ClientId is not Guid clientId)
+        {
+            if (_model.ClientId is null)
+            {
+                _formError = "Selecione um cliente para o diagnóstico.";
+            }
+
+            return;
+        }
+
+        _isSaving = true;
+        try
+        {
+            var objectives = ObjectiveOptions
+                .Where(objective => _selectedObjectives.Contains(objective.Code))
+                .Select(objective => new ObjectiveInput(
+                    objective.Code,
+                    _primaryObjectiveCode == objective.Code,
+                    objective.Code == "Other" ? NormalizeOptional(_model.OtherDescription) : null))
+                .ToArray();
+            var input = new DiagnosisInput(
+                clientId,
+                _model.Title,
+                _model.AssessmentDate,
+                NormalizeOptional(_model.Context),
+                objectives);
+
+            using var response = _isEditing && DiagnosisId is Guid diagnosisId
+                ? await Http.PutAsJsonAsync($"api/diagnoses/{diagnosisId}", input)
+                : await Http.PostAsJsonAsync("api/diagnoses", input);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _saveError = GetSaveError(response.StatusCode);
+                return;
+            }
+
+            var savedDiagnosis = await response.Content.ReadFromJsonAsync<DiagnosisContract>();
+            if (savedDiagnosis is null)
+            {
+                _saveError = "A API não confirmou os dados salvos. Mantenha o formulário aberto e tente novamente.";
+                return;
+            }
+
+            _hasUnsavedChanges = false;
+            Navigation.NavigateTo($"/diagnoses/{savedDiagnosis.Id}");
+        }
+        catch (HttpRequestException)
+        {
+            _saveError = "Não foi possível conectar à API. Seus dados continuam neste formulário; tente salvar novamente.";
+        }
+        catch (TaskCanceledException)
+        {
+            _saveError = "Não foi possível confirmar o salvamento. Seus dados continuam neste formulário; tente novamente.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _saveError = "A resposta da API não confirmou o salvamento. Seus dados continuam neste formulário.";
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task ConfirmInternalNavigationAsync(LocationChangingContext context)
+    {
+        if (!await ConfirmLeaveAsync())
+        {
+            context.PreventNavigation();
+        }
+    }
+
+    private async Task<bool> ConfirmLeaveAsync()
+    {
+        if (!_hasUnsavedChanges)
+        {
+            return true;
+        }
+
+        var shouldLeave = await JS.InvokeAsync<bool>(
+            "confirm",
+            "Há alterações não salvas. Deseja sair e descartar essas alterações?");
+        if (shouldLeave)
+        {
+            _hasUnsavedChanges = false;
+        }
+
+        return shouldLeave;
+    }
+
+    private static string GetSaveError(HttpStatusCode statusCode) => statusCode switch
+    {
+        HttpStatusCode.BadRequest => "Revise os campos informados e tente novamente.",
+        HttpStatusCode.NotFound => "O cliente ou diagnóstico não foi encontrado. Atualize os dados e tente novamente.",
+        HttpStatusCode.Conflict => "Este diagnóstico não pode ser alterado agora. Atualize os dados e tente novamente.",
+        _ => "Não foi possível salvar o diagnóstico. Seus dados continuam neste formulário; tente novamente."
+    };
+
+    private static string GetStatusLabel(string status) => status switch
+    {
+        "Draft" => "Rascunho",
+        "InProgress" => "Em andamento",
+        "Completed" => "Concluído",
+        _ => status
+    };
+
+    private static string? NormalizeOptional(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    public void Dispose()
+    {
+        if (_editContext is not null)
+        {
+            _editContext.OnFieldChanged -= HandleFieldChanged;
+        }
+    }
+
+    private sealed class DiagnosisFormModel
+    {
+        [Required(ErrorMessage = "Informe o título do diagnóstico.")]
+        public string Title { get; set; } = string.Empty;
+
+        [Required(ErrorMessage = "Selecione um cliente.")]
+        public Guid? ClientId { get; set; }
+
+        public DateOnly AssessmentDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+
+        public string Context { get; set; } = string.Empty;
+
+        public string OtherDescription { get; set; } = string.Empty;
+    }
+
+    private sealed record ObjectiveOption(string Code, string Label);
+}

@@ -1,0 +1,738 @@
+@page "/diagnoses/{DiagnosisId:guid}/report"
+@using System.Net
+@using System.Net.Http.Json
+@using System.Text.Json
+@using Prisma.Client.Shared
+@using Prisma.Contracts.Diagnoses
+@using Prisma.Contracts.Reports
+@using Prisma.Contracts.SectorAssessments
+@inject HttpClient Http
+@inject IJSRuntime JS
+
+<PageTitle>@(_report?.DiagnosisTitle ?? "Relatório do diagnóstico") | Diagnóstico</PageTitle>
+
+<UnsavedChangesGuard IsDirty="@HasUnsavedReportChanges" ConfirmationMessage="Há textos do relatório não salvos. Deseja sair e descartá-los?" />
+
+<section class="diagnosis-page report-page">
+    <div class="diagnosis-breadcrumbs report-no-print">
+        <NavLink href="/">Início</NavLink>
+        <span aria-hidden="true">/</span>
+        @if (_report is not null)
+        {
+            <NavLink href="@($"/diagnoses/{DiagnosisId}")">@_report.DiagnosisTitle</NavLink>
+            <span aria-hidden="true">/</span>
+        }
+        <span>Relatório</span>
+    </div>
+
+    @if (_isLoading)
+    {
+        <div class="state-message card diagnosis-state" role="status">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            <span>Carregando relatório…</span>
+        </div>
+    }
+    else if (_loadError is not null)
+    {
+        <div class="state-message state-error card diagnosis-state" role="alert">
+            <p>@_loadError</p>
+            <button class="btn btn-outline-primary" type="button" @onclick="LoadAsync">Tentar novamente</button>
+        </div>
+    }
+    else if (_report is not null)
+    {
+        <header class="diagnosis-page-header report-page-header">
+            <div>
+                <p class="eyebrow">REVISÃO E APRESENTAÇÃO</p>
+                <h1>Relatório do diagnóstico</h1>
+                <p class="section-description">@_report.DiagnosisTitle · @_report.Client.CompanyName</p>
+            </div>
+            <div class="report-toolbar report-no-print">
+                <span class="status-pill status-@_report.Status">@GetStatusLabel(_report.Status)</span>
+                @if (_report.Status == "Completed")
+                {
+                    <button class="btn btn-outline-primary" type="button" disabled="@_isUpdatingStatus" @onclick="ReopenAsync">
+                        @(_isUpdatingStatus ? "Reabrindo…" : "Reabrir para editar")
+                    </button>
+                }
+                else
+                {
+                    <button class="btn btn-primary" type="button" disabled="@(_isUpdatingStatus || HasUnsavedReportChanges)" @onclick="CompleteAsync">
+                        @(_isUpdatingStatus ? "Concluindo…" : "Concluir diagnóstico")
+                    </button>
+                }
+                <button class="btn btn-outline-secondary" type="button" disabled="@_isPrinting" @onclick="PrintAsync">
+                    @(_isPrinting ? "Preparando impressão…" : "Imprimir / salvar PDF")
+                </button>
+            </div>
+        </header>
+
+        <nav class="diagnosis-stage-nav report-no-print" aria-label="Etapas do diagnóstico">
+            <NavLink href="@($"/diagnoses/{DiagnosisId}")"><span>1</span> Preparação</NavLink>
+            @if (_report.Assessments.FirstOrDefault() is { } firstAssessment)
+            {
+                <NavLink href="@($"/diagnoses/{DiagnosisId}/assessments/{firstAssessment.Id}")"><span>2</span> Entrevistas</NavLink>
+            }
+            else
+            {
+                <span class="stage-upcoming"><span>2</span> Entrevistas</span>
+            }
+            <NavLink href="@($"/diagnoses/{DiagnosisId}/bottlenecks")"><span>3</span> Gargalos e oportunidades</NavLink>
+            <NavLink href="@($"/diagnoses/{DiagnosisId}/phases")"><span>4</span> Plano</NavLink>
+            <NavLink class="active" href="@($"/diagnoses/{DiagnosisId}/report")" aria-current="page"><span>5</span> Relatório</NavLink>
+        </nav>
+
+        @if (_statusMessage is not null)
+        {
+            <div class="alert alert-success report-no-print" role="status">@_statusMessage</div>
+        }
+        @if (_actionError is not null)
+        {
+            <div class="alert alert-danger report-no-print" role="alert">@_actionError</div>
+        }
+        @if (_report.Status == "Completed")
+        {
+            <div class="alert alert-info report-no-print" role="status">
+                Este diagnóstico está concluído e é somente leitura. Reabra-o para editar os dados e os textos do relatório.
+            </div>
+        }
+        else if (HasUnsavedReportChanges)
+        {
+            <div class="alert alert-warning report-no-print" role="status">
+                Há alterações locais. Salve os textos antes de concluir; a impressão usa a última versão salva.
+            </div>
+        }
+
+        <article class="report-content" aria-label="Conteúdo salvo do relatório">
+            <section class="report-card report-identification" aria-labelledby="report-identification-heading">
+                <div class="report-section-heading">
+                    <div>
+                        <p class="eyebrow">IDENTIFICAÇÃO</p>
+                        <h2 id="report-identification-heading">@_report.Client.CompanyName</h2>
+                    </div>
+                    <div class="report-date-block">
+                        <span>Data do diagnóstico</span>
+                        <strong>@_report.AssessmentDate.ToString("dd/MM/yyyy")</strong>
+                    </div>
+                </div>
+                <dl class="report-meta-grid">
+                    <div>
+                        <dt>Segmento</dt>
+                        <dd>@DisplayOptional(_report.Client.Segment)</dd>
+                    </div>
+                    <div>
+                        <dt>Status</dt>
+                        <dd>@GetStatusLabel(_report.Status)</dd>
+                    </div>
+                    <div class="report-meta-wide">
+                        <dt>Contexto</dt>
+                        <dd>@DisplayOptional(_report.Context)</dd>
+                    </div>
+                </dl>
+                <div class="report-objectives-block" aria-labelledby="report-objectives-heading">
+                    <h3 id="report-objectives-heading">Objetivos</h3>
+                @if (_report.Objectives.Count == 0)
+                {
+                    <p class="report-not-informed">Não informado</p>
+                }
+                else
+                {
+                    <ul class="report-objectives">
+                        @foreach (var objective in _report.Objectives)
+                        {
+                            <li @key="objective.Code">
+                                <span>@GetObjectiveLabel(objective.Code, objective.CustomDescription)</span>
+                                @if (objective.IsPrimary)
+                                {
+                                    <span class="report-primary-label">Objetivo principal</span>
+                                }
+                            </li>
+                        }
+                    </ul>
+                }
+                </div>
+            </section>
+
+            <section class="report-card" aria-labelledby="report-summary-heading">
+                <div class="report-section-heading">
+                    <div>
+                        <p class="eyebrow">SÍNTESE</p>
+                        <h2 id="report-summary-heading">Resumo executivo</h2>
+                    </div>
+                </div>
+                <p class="report-prose">@DisplayOptional(_report.ExecutiveSummary)</p>
+            </section>
+
+            <section class="report-card" aria-labelledby="report-assessments-heading">
+                <div class="report-section-heading">
+                    <div>
+                        <p class="eyebrow">ENTREVISTAS</p>
+                        <h2 id="report-assessments-heading">Setores avaliados e respostas</h2>
+                    </div>
+                    <span class="count-badge">@_report.Assessments.Count</span>
+                </div>
+                @if (_report.Assessments.Count == 0)
+                {
+                    <p class="report-not-informed">Não informado</p>
+                }
+                else
+                {
+                    <div class="report-assessment-list">
+                        @foreach (var assessment in _report.Assessments)
+                        {
+                            <section class="report-assessment" @key="assessment.Id" aria-label="Setor @assessment.SectorNameSnapshot">
+                                <div class="report-assessment-heading">
+                                    <h3>@assessment.SectorNameSnapshot</h3>
+                                    <span>@assessment.AnsweredCount de 10 respostas</span>
+                                </div>
+                                @if (assessment.AnsweredCount == 0)
+                                {
+                                    <p class="report-not-informed">Não informado</p>
+                                }
+                                else
+                                {
+                                    <dl class="report-answer-list">
+                                        @for (var index = 0; index < Questions.Length; index++)
+                                        {
+                                            var answer = GetAnswer(assessment, index + 1);
+                                            if (!string.IsNullOrWhiteSpace(answer))
+                                            {
+                                                <div @key="index">
+                                                    <dt>@Questions[index]</dt>
+                                                    <dd>@answer</dd>
+                                                </div>
+                                            }
+                                        }
+                                    </dl>
+                                }
+                            </section>
+                        }
+                    </div>
+                }
+            </section>
+
+            <section class="report-card" aria-labelledby="report-bottlenecks-heading">
+                <div class="report-section-heading">
+                    <div>
+                        <p class="eyebrow">ANÁLISE</p>
+                        <h2 id="report-bottlenecks-heading">Gargalos identificados</h2>
+                    </div>
+                    <span class="count-badge">@_report.Bottlenecks.Count</span>
+                </div>
+                @if (_report.Bottlenecks.Count == 0)
+                {
+                    <p class="report-not-informed">Não informado</p>
+                }
+                else
+                {
+                    <div class="report-item-list">
+                        @foreach (var bottleneck in _report.Bottlenecks)
+                        {
+                            <section class="report-item" @key="bottleneck.Id">
+                                <div class="report-item-heading">
+                                    <h3>@bottleneck.Title</h3>
+                                    <span class="report-score">Impacto @bottleneck.Impact/5</span>
+                                </div>
+                                <p class="report-prose">@DisplayOptional(bottleneck.Description)</p>
+                                <dl class="report-detail-grid">
+                                    <div><dt>Categoria</dt><dd>@GetBottleneckCategory(bottleneck.Category)</dd></div>
+                                    <div><dt>Frequência</dt><dd>@DisplayOptional(bottleneck.Frequency)</dd></div>
+                                    <div><dt>Evidência</dt><dd>@DisplayOptional(bottleneck.Evidence)</dd></div>
+                                    <div><dt>Causa provável</dt><dd>@DisplayOptional(bottleneck.ProbableCause)</dd></div>
+                                    <div><dt>Horas estimadas por mês</dt><dd>@FormatMonthlyHours(bottleneck.EstimatedMonthlyHours)</dd></div>
+                                    <div><dt>Observações</dt><dd>@DisplayOptional(bottleneck.Notes)</dd></div>
+                                </dl>
+                            </section>
+                        }
+                    </div>
+                }
+            </section>
+
+            <section class="report-card" aria-labelledby="report-opportunities-heading">
+                <div class="report-section-heading">
+                    <div>
+                        <p class="eyebrow">RECOMENDAÇÕES</p>
+                        <h2 id="report-opportunities-heading">Oportunidades priorizadas</h2>
+                        <p class="section-description">Pontuação = (impacto × 2) + urgência − esforço.</p>
+                    </div>
+                    <span class="count-badge">@_report.Opportunities.Count</span>
+                </div>
+                @if (_report.Opportunities.Count == 0)
+                {
+                    <p class="report-not-informed">Não informado</p>
+                }
+                else
+                {
+                    <ol class="report-opportunity-list">
+                        @foreach (var opportunity in _report.Opportunities)
+                        {
+                            <li class="report-opportunity" @key="opportunity.Id">
+                                <div class="report-item-heading">
+                                    <div>
+                                        <span class="report-rank">Prioridade @(_report.Opportunities.ToList().FindIndex(candidate => candidate.Id == opportunity.Id) + 1)</span>
+                                        <h3>@opportunity.Title</h3>
+                                    </div>
+                                    <span class="report-score">Pontuação @opportunity.PriorityScore</span>
+                                </div>
+                                <p class="report-prose">@DisplayOptional(opportunity.SolutionDescription)</p>
+                                <dl class="report-detail-grid">
+                                    <div><dt>Tipo</dt><dd>@GetOpportunityType(opportunity.Type)</dd></div>
+                                    <div><dt>Benefício esperado</dt><dd>@DisplayOptional(opportunity.ExpectedBenefit)</dd></div>
+                                    <div><dt>Impacto</dt><dd>@opportunity.Impact/5</dd></div>
+                                    <div><dt>Esforço</dt><dd>@opportunity.Effort/5</dd></div>
+                                    <div><dt>Urgência</dt><dd>@opportunity.Urgency/5</dd></div>
+                                    <div><dt>Fase</dt><dd>@GetPhaseName(opportunity.PhaseId)</dd></div>
+                                    <div><dt>Dependências</dt><dd>@DisplayOptional(opportunity.Dependencies)</dd></div>
+                                    @if (opportunity.Type == "AiApplication")
+                                    {
+                                        <div><dt>Dados necessários</dt><dd>@DisplayOptional(opportunity.AiDataNeeds)</dd></div>
+                                        <div><dt>Revisão humana</dt><dd>@GetHumanReviewLabel(opportunity.NeedsHumanReview)</dd></div>
+                                    }
+                                </dl>
+                            </li>
+                        }
+                    </ol>
+                }
+            </section>
+
+            <section class="report-card" aria-labelledby="report-phases-heading">
+                <div class="report-section-heading">
+                    <div>
+                        <p class="eyebrow">EXECUÇÃO</p>
+                        <h2 id="report-phases-heading">Plano por fases</h2>
+                    </div>
+                </div>
+                @if (_report.Phases.Count == 0)
+                {
+                    <p class="report-not-informed">Não informado</p>
+                }
+                else
+                {
+                    <ol class="report-phase-list">
+                        @foreach (var phase in _report.Phases.OrderBy(candidate => candidate.SortOrder).ThenBy(candidate => candidate.Id))
+                        {
+                            var phaseOpportunities = _report.Opportunities.Where(opportunity => opportunity.PhaseId == phase.Id).ToArray();
+                            <li class="report-phase" @key="phase.Id">
+                                <div class="report-item-heading">
+                                    <h3>@phase.Name</h3>
+                                    <span class="report-phase-count">@phaseOpportunities.Length oportunidade(s)</span>
+                                </div>
+                                <p class="report-prose">@DisplayOptional(phase.Description)</p>
+                                @if (phaseOpportunities.Length > 0)
+                                {
+                                    <ul class="report-phase-opportunities">
+                                        @foreach (var opportunity in phaseOpportunities)
+                                        {
+                                            <li @key="opportunity.Id"><span>@opportunity.Title</span><strong>Pontuação @opportunity.PriorityScore</strong></li>
+                                        }
+                                    </ul>
+                                }
+                                else
+                                {
+                                    <p class="report-not-informed">Nenhuma oportunidade associada a esta fase.</p>
+                                }
+                            </li>
+                        }
+                    </ol>
+                }
+                @if (_report.UnallocatedOpportunities.Count > 0)
+                {
+                    <section class="report-unallocated" aria-labelledby="report-unallocated-heading">
+                        <h3 id="report-unallocated-heading">Oportunidades não alocadas</h3>
+                        <ul class="report-phase-opportunities">
+                            @foreach (var opportunity in _report.UnallocatedOpportunities)
+                            {
+                                <li @key="opportunity.Id"><span>@opportunity.Title</span><strong>Pontuação @opportunity.PriorityScore</strong></li>
+                            }
+                        </ul>
+                    </section>
+                }
+            </section>
+
+            <section class="report-card" aria-labelledby="report-recommendations-heading">
+                <div class="report-section-heading">
+                    <div>
+                        <p class="eyebrow">ENCAMINHAMENTOS</p>
+                        <h2 id="report-recommendations-heading">Recomendações gerais</h2>
+                    </div>
+                </div>
+                <p class="report-prose">@DisplayOptional(_report.GeneralRecommendations)</p>
+            </section>
+
+            <section class="report-card" aria-labelledby="report-next-steps-heading">
+                <div class="report-section-heading">
+                    <div>
+                        <p class="eyebrow">PRÓXIMAS AÇÕES</p>
+                        <h2 id="report-next-steps-heading">Próximos passos</h2>
+                    </div>
+                </div>
+                <p class="report-prose">@DisplayOptional(_report.NextSteps)</p>
+            </section>
+        </article>
+
+        @if (_report.Status != "Completed")
+        {
+            <section class="report-editor report-card report-no-print" aria-labelledby="report-editor-heading">
+                <div class="report-section-heading">
+                    <div>
+                        <p class="eyebrow">EDIÇÃO EXPLÍCITA</p>
+                        <h2 id="report-editor-heading">Textos do relatório</h2>
+                        <p class="section-description">As alterações ficam neste formulário até você salvar.</p>
+                    </div>
+                </div>
+                <div class="report-editor-grid">
+                    <div class="form-field report-editor-wide">
+                        <label class="form-label" for="report-executive-summary">Resumo executivo</label>
+                        <textarea id="report-executive-summary" class="form-control" rows="5" maxlength="10000" @bind="_executiveSummary" @bind:event="oninput"></textarea>
+                    </div>
+                    <div class="form-field">
+                        <label class="form-label" for="report-general-recommendations">Recomendações gerais</label>
+                        <textarea id="report-general-recommendations" class="form-control" rows="5" maxlength="10000" @bind="_generalRecommendations" @bind:event="oninput"></textarea>
+                    </div>
+                    <div class="form-field">
+                        <label class="form-label" for="report-next-steps">Próximos passos</label>
+                        <textarea id="report-next-steps" class="form-control" rows="5" maxlength="10000" @bind="_nextSteps" @bind:event="oninput"></textarea>
+                    </div>
+                </div>
+                <div class="report-editor-footer">
+                    <span class="form-hint">
+                        @if (HasUnsavedReportChanges)
+                        {
+                            <span>Há alterações que ainda não foram salvas.</span>
+                        }
+                        else
+                        {
+                            <span>Não há alterações pendentes.</span>
+                        }
+                    </span>
+                    <button class="btn btn-primary" type="button" disabled="@(_isSavingReport || !HasUnsavedReportChanges)" @onclick="SaveReportAsync">
+                        @(_isSavingReport ? "Salvando…" : "Salvar textos")
+                    </button>
+                </div>
+            </section>
+        }
+    }
+</section>
+
+@code {
+    private static readonly string[] Questions =
+    [
+        "Quais atividades e processos esse setor executa?",
+        "Quais sistemas, planilhas e ferramentas utiliza?",
+        "O que mais consome tempo da equipe?",
+        "Quais tarefas são repetitivas ou exigem copiar informações?",
+        "Onde existem esperas, aprovações ou dependência de outras pessoas?",
+        "Quais erros e retrabalhos acontecem com frequência?",
+        "Que informações são difíceis de encontrar ou ficam espalhadas?",
+        "Existem falhas na comunicação ou na transferência de informações entre setores?",
+        "O que já foi tentado para melhorar esses problemas?",
+        "Qual resultado indicaria que a melhoria deu certo?"
+    ];
+
+    private static readonly IReadOnlyDictionary<string, string> ObjectiveLabels = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["ReduceCosts"] = "Reduzir custos",
+        ["ImproveProductivity"] = "Melhorar produtividade",
+        ["ReduceErrorsAndRework"] = "Diminuir erros e retrabalho",
+        ["ImproveService"] = "Melhorar atendimento",
+        ["IncreaseSales"] = "Aumentar vendas",
+        ["IntegrateInformation"] = "Integrar informações",
+        ["Other"] = "Outro"
+    };
+
+    private static readonly IReadOnlyDictionary<string, string> BottleneckCategories = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["ManualWork"] = "Trabalho manual",
+        ["Repetition"] = "Repetição",
+        ["Rework"] = "Retrabalho",
+        ["Delay"] = "Demora",
+        ["MissingIntegration"] = "Falta de integração",
+        ["ScatteredInformation"] = "Informações dispersas",
+        ["PeopleDependency"] = "Dependência de pessoas",
+        ["CommercialProblem"] = "Problema comercial",
+        ["Other"] = "Outro"
+    };
+
+    private static readonly IReadOnlyDictionary<string, string> OpportunityTypes = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["ProcessImprovement"] = "Melhoria de processo",
+        ["ExistingTool"] = "Ferramenta existente",
+        ["Integration"] = "Integração",
+        ["CustomSoftware"] = "Software sob medida",
+        ["Automation"] = "Automação",
+        ["AiApplication"] = "Aplicação de IA"
+    };
+
+    [Parameter] public Guid DiagnosisId { get; set; }
+
+    private DiagnosisReportContract? _report;
+    private string? _executiveSummary;
+    private string? _generalRecommendations;
+    private string? _nextSteps;
+    private string? _loadError;
+    private string? _actionError;
+    private string? _statusMessage;
+    private bool _isLoading;
+    private bool _isSavingReport;
+    private bool _isUpdatingStatus;
+    private bool _isPrinting;
+
+    private bool HasUnsavedReportChanges => _report is not null &&
+        (!string.Equals(_executiveSummary, _report.ExecutiveSummary, StringComparison.Ordinal) ||
+         !string.Equals(_generalRecommendations, _report.GeneralRecommendations, StringComparison.Ordinal) ||
+         !string.Equals(_nextSteps, _report.NextSteps, StringComparison.Ordinal));
+
+    protected override Task OnParametersSetAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _isLoading = true;
+        _loadError = null;
+        _actionError = null;
+        _statusMessage = null;
+        try
+        {
+            using var response = await Http.GetAsync($"api/diagnoses/{DiagnosisId}/report");
+            if (!response.IsSuccessStatusCode)
+            {
+                _loadError = response.StatusCode == HttpStatusCode.NotFound
+                    ? "Diagnóstico não encontrado."
+                    : "Não foi possível carregar o relatório. Verifique a conexão com a API e tente novamente.";
+                return;
+            }
+
+            var report = await response.Content.ReadFromJsonAsync<DiagnosisReportContract>();
+            if (report is null)
+            {
+                _loadError = "A API não retornou os dados do relatório. Tente carregar novamente.";
+                return;
+            }
+
+            SetReport(report);
+        }
+        catch (HttpRequestException)
+        {
+            _loadError = "Não foi possível carregar o relatório. Verifique se a API está disponível e tente novamente.";
+        }
+        catch (JsonException)
+        {
+            _loadError = "A resposta da API não pôde ser lida. Tente carregar novamente.";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task SaveReportAsync()
+    {
+        if (_report is null || _report.Status == "Completed" || _isSavingReport || !HasUnsavedReportChanges)
+        {
+            return;
+        }
+
+        _isSavingReport = true;
+        _actionError = null;
+        _statusMessage = null;
+        try
+        {
+            using var response = await Http.PutAsJsonAsync(
+                $"api/diagnoses/{DiagnosisId}/report",
+                new DiagnosisReportInput(_executiveSummary, _generalRecommendations, _nextSteps));
+            if (!response.IsSuccessStatusCode)
+            {
+                _actionError = response.StatusCode == HttpStatusCode.Conflict
+                    ? await ReadProblemMessageAsync(response) ?? "O diagnóstico está concluído. Reabra-o antes de editar o relatório."
+                    : await ReadProblemMessageAsync(response) ?? "Não foi possível salvar os textos. Os valores digitados continuam no formulário para uma nova tentativa.";
+                return;
+            }
+
+            var savedReport = await response.Content.ReadFromJsonAsync<DiagnosisReportContract>();
+            if (savedReport is null)
+            {
+                _actionError = "A API não confirmou os dados salvos. Seus textos continuam no formulário.";
+                return;
+            }
+
+            SetReport(savedReport);
+            _statusMessage = "Textos do relatório salvos.";
+        }
+        catch (HttpRequestException)
+        {
+            _actionError = "Não foi possível salvar os textos. Verifique a conexão e tente novamente; seus valores continuam no formulário.";
+        }
+        catch (JsonException)
+        {
+            _actionError = "A resposta da API não confirmou o salvamento. Seus textos continuam no formulário.";
+        }
+        finally
+        {
+            _isSavingReport = false;
+        }
+    }
+
+    private Task CompleteAsync() => UpdateStatusAsync("Completed");
+
+    private Task ReopenAsync() => UpdateStatusAsync("InProgress");
+
+    private async Task UpdateStatusAsync(string status)
+    {
+        if (_report is null || _isUpdatingStatus || (status == "Completed" && HasUnsavedReportChanges))
+        {
+            return;
+        }
+
+        _isUpdatingStatus = true;
+        _actionError = null;
+        _statusMessage = null;
+        try
+        {
+            using var response = await Http.PutAsJsonAsync(
+                $"api/diagnoses/{DiagnosisId}/status",
+                new DiagnosisStatusInput(status));
+            if (!response.IsSuccessStatusCode)
+            {
+                _actionError = await ReadProblemMessageAsync(response) ??
+                    "Não foi possível alterar o status. Confira se há itens pendentes e tente novamente.";
+                return;
+            }
+
+            var updatedDiagnosis = await response.Content.ReadFromJsonAsync<DiagnosisSummaryContract>();
+            if (updatedDiagnosis is null || !string.Equals(updatedDiagnosis.Status, status, StringComparison.Ordinal))
+            {
+                _actionError = "A API não confirmou a alteração de status.";
+                return;
+            }
+
+            _report = _report with { Status = updatedDiagnosis.Status };
+            _statusMessage = status == "Completed"
+                ? "Diagnóstico concluído. O conteúdo está disponível somente para leitura."
+                : "Diagnóstico reaberto. Os dados existentes foram preservados e podem ser editados.";
+        }
+        catch (HttpRequestException)
+        {
+            _actionError = "Não foi possível alterar o status. Verifique a conexão com a API e tente novamente.";
+        }
+        catch (JsonException)
+        {
+            _actionError = "A resposta da API não confirmou a alteração de status.";
+        }
+        finally
+        {
+            _isUpdatingStatus = false;
+        }
+    }
+
+    private async Task PrintAsync()
+    {
+        if (_isPrinting)
+        {
+            return;
+        }
+
+        if (HasUnsavedReportChanges && !await JS.InvokeAsync<bool>(
+                "confirm",
+                "Há textos não salvos. A impressão vai usar a última versão salva. Deseja continuar?"))
+        {
+            return;
+        }
+
+        _isPrinting = true;
+        try
+        {
+            await JS.InvokeVoidAsync("window.print");
+        }
+        finally
+        {
+            _isPrinting = false;
+        }
+    }
+
+    private void SetReport(DiagnosisReportContract report)
+    {
+        _report = report;
+        _executiveSummary = report.ExecutiveSummary;
+        _generalRecommendations = report.GeneralRecommendations;
+        _nextSteps = report.NextSteps;
+    }
+
+    private static async Task<string?> ReadProblemMessageAsync(HttpResponseMessage response)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            if (document.RootElement.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.String)
+            {
+                return detail.GetString();
+            }
+
+            if (document.RootElement.TryGetProperty("title", out var title) && title.ValueKind == JsonValueKind.String)
+            {
+                return title.GetString();
+            }
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private string GetPhaseName(Guid? phaseId)
+    {
+        if (!phaseId.HasValue)
+        {
+            return "Não alocada";
+        }
+
+        var phaseName = _report?.Phases.FirstOrDefault(phase => phase.Id == phaseId.Value)?.Name;
+        return DisplayOptional(phaseName);
+    }
+
+    private static string GetObjectiveLabel(string code, string? customDescription) =>
+        code == "Other" && !string.IsNullOrWhiteSpace(customDescription)
+            ? $"Outro: {customDescription}"
+            : ObjectiveLabels.GetValueOrDefault(code, "Não informado");
+
+    private static string GetBottleneckCategory(string code) => BottleneckCategories.GetValueOrDefault(code, "Não informado");
+
+    private static string GetOpportunityType(string code) => OpportunityTypes.GetValueOrDefault(code, "Não informado");
+
+    private static string GetHumanReviewLabel(bool? needsHumanReview) => needsHumanReview switch
+    {
+        true => "Necessária",
+        false => "Não necessária",
+        null => "Não informado"
+    };
+
+    private static string GetStatusLabel(string status) => status switch
+    {
+        "Draft" => "Rascunho",
+        "InProgress" => "Em andamento",
+        "Completed" => "Concluído",
+        _ => "Não informado"
+    };
+
+    private static string DisplayOptional(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "Não informado" : value;
+
+    private static string FormatMonthlyHours(decimal? value) => value.HasValue
+        ? $"{value.Value.ToString("0.##", System.Globalization.CultureInfo.GetCultureInfo("pt-BR"))} horas"
+        : "Não informado";
+
+    private static string? GetAnswer(SectorAssessmentContract assessment, int questionNumber) => questionNumber switch
+    {
+        1 => assessment.Q01,
+        2 => assessment.Q02,
+        3 => assessment.Q03,
+        4 => assessment.Q04,
+        5 => assessment.Q05,
+        6 => assessment.Q06,
+        7 => assessment.Q07,
+        8 => assessment.Q08,
+        9 => assessment.Q09,
+        10 => assessment.Q10,
+        _ => null
+    };
+}

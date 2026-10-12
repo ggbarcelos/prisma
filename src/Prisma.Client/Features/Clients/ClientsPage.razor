@@ -1,0 +1,429 @@
+@page "/clients"
+@using System.Net.Http.Json
+@using Prisma.Contracts.Clients
+@inject HttpClient Http
+
+<PageTitle>Clientes | Diagnóstico</PageTitle>
+
+<section class="clients-page">
+    <header class="clients-page-header">
+        <div>
+            <p class="eyebrow">CADASTROS</p>
+            <h1>Clientes e setores</h1>
+            <p class="page-description">Organize as informações que serão reutilizadas nos diagnósticos.</p>
+        </div>
+        <button type="button" class="btn btn-primary" @onclick="BeginCreateClient">
+            <span aria-hidden="true">＋</span> Novo cliente
+        </button>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(_statusMessage))
+    {
+        <div class="alert alert-success" role="status">@_statusMessage</div>
+    }
+
+    <div class="client-search-card card">
+        <form class="client-search" @onsubmit="SearchAsync" @onsubmit:preventDefault>
+            <label for="client-search-input" class="form-label">Pesquisar clientes</label>
+            <div class="input-group">
+                <input id="client-search-input" class="form-control" type="search" autocomplete="off"
+                       placeholder="Empresa, segmento ou contato" @bind="_searchText" />
+                <button class="btn btn-outline-primary" type="submit" disabled="@_isLoading">Buscar</button>
+                @if (!string.IsNullOrWhiteSpace(_searchText))
+                {
+                    <button class="btn btn-outline-secondary" type="button" @onclick="ClearSearchAsync" disabled="@_isLoading">Limpar</button>
+                }
+            </div>
+        </form>
+    </div>
+
+    <div class="clients-layout">
+        <aside class="client-directory card" aria-labelledby="client-list-heading">
+            <div class="directory-heading">
+                <h2 id="client-list-heading">Clientes</h2>
+                @if (!_isLoading && _loadError is null)
+                {
+                    <span class="count-badge">@_clients.Count</span>
+                }
+            </div>
+
+            @if (_isLoading)
+            {
+                <div class="state-message" role="status">
+                    <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                    <span>Carregando clientes…</span>
+                </div>
+            }
+            else if (_loadError is not null)
+            {
+                <div class="state-message state-error" role="alert">
+                    <p>@_loadError</p>
+                    <button type="button" class="btn btn-sm btn-outline-primary" @onclick="ReloadClientsAsync">Tentar novamente</button>
+                </div>
+            }
+            else if (_clients.Count == 0)
+            {
+                <div class="state-message empty-state">
+                    <span class="empty-state-icon" aria-hidden="true">◎</span>
+                    @if (string.IsNullOrWhiteSpace(_searchText))
+                    {
+                        <strong>Nenhum cliente cadastrado</strong>
+                        <span>Cadastre o primeiro para começar.</span>
+                    }
+                    else
+                    {
+                        <strong>Nenhum resultado</strong>
+                        <span>Tente pesquisar por outro termo.</span>
+                    }
+                </div>
+            }
+            else
+            {
+                <div class="client-list" role="list">
+                    @foreach (var client in _clients)
+                    {
+                        <div class="client-list-entry" role="listitem" @key="client.Id">
+                            <button type="button"
+                                    class="client-list-item @(_selectedClient?.Id == client.Id ? "selected" : string.Empty)"
+                                    aria-pressed="@(_selectedClient?.Id == client.Id ? "true" : "false")"
+                                    @onclick="() => SelectClientAsync(client)">
+                                <span class="client-avatar" aria-hidden="true">@GetInitials(client.CompanyName)</span>
+                                <span class="client-list-copy">
+                                    <strong>@client.CompanyName</strong>
+                                    <span>@client.Segment</span>
+                                </span>
+                                <span class="client-chevron" aria-hidden="true">›</span>
+                            </button>
+                        </div>
+                    }
+                </div>
+            }
+        </aside>
+
+        <section class="client-workspace" aria-live="polite">
+            @if (_showClientForm)
+            {
+                <ClientForm @key="_editingClient?.Id" Client="_editingClient"
+                            OnSaved="HandleClientSavedAsync" OnCancel="CancelClientForm" />
+            }
+            else if (_selectedClient is not null)
+            {
+                <div class="selected-client-card card">
+                    <div class="selected-client-heading">
+                        <div class="selected-client-identity">
+                            <span class="client-avatar client-avatar-large" aria-hidden="true">@GetInitials(_selectedClient.CompanyName)</span>
+                            <div>
+                                <p class="eyebrow">CLIENTE</p>
+                                <h2>@_selectedClient.CompanyName</h2>
+                                <span class="segment-pill">@_selectedClient.Segment</span>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-outline-primary btn-sm" @onclick="() => BeginEditClient(_selectedClient)">Editar dados</button>
+                    </div>
+
+                    <dl class="client-contact-grid">
+                        <div>
+                            <dt>Contato</dt>
+                            <dd>@DisplayOptional(_selectedClient.ContactName)</dd>
+                        </div>
+                        <div>
+                            <dt>E-mail</dt>
+                            <dd>@DisplayOptional(_selectedClient.Email)</dd>
+                        </div>
+                        <div>
+                            <dt>Telefone</dt>
+                            <dd>@DisplayOptional(_selectedClient.Phone)</dd>
+                        </div>
+                        <div>
+                            <dt>Observações</dt>
+                            <dd>@DisplayOptional(_selectedClient.Notes)</dd>
+                        </div>
+                    </dl>
+                </div>
+
+                <div class="sectors-card card">
+                    <div class="sectors-heading">
+                        <div>
+                            <p class="eyebrow">ESTRUTURA DO CLIENTE</p>
+                            <h2>Setores</h2>
+                            <p class="section-description">Setores disponíveis para incluir em futuros diagnósticos.</p>
+                        </div>
+                        @if (!_showSectorForm)
+                        {
+                            <button type="button" class="btn btn-primary btn-sm" @onclick="BeginCreateSector">
+                                <span aria-hidden="true">＋</span> Novo setor
+                            </button>
+                        }
+                    </div>
+
+                    @if (_showSectorForm)
+                    {
+                        <ClientSectorForm @key="_editingSector?.Id" ClientId="_selectedClient.Id" ClientName="_selectedClient.CompanyName" Sector="_editingSector"
+                                          OnSaved="HandleSectorSavedAsync" OnCancel="CancelSectorForm" />
+                    }
+                    else if (_sectorsLoading)
+                    {
+                        <div class="state-message compact-state" role="status">
+                            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                            <span>Carregando setores…</span>
+                        </div>
+                    }
+                    else if (_sectorsError is not null)
+                    {
+                        <div class="state-message state-error compact-state" role="alert">
+                            <p>@_sectorsError</p>
+                            <button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => LoadSectorsAsync(_selectedClient.Id)">Tentar novamente</button>
+                        </div>
+                    }
+                    else if (_sectors.Count == 0)
+                    {
+                        <div class="state-message empty-sectors">
+                            <strong>Nenhum setor cadastrado</strong>
+                            <span>Use uma sugestão ou informe um nome personalizado.</span>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="sector-list">
+                            @foreach (var sector in _sectors)
+                            {
+                                <article class="sector-list-item" @key="sector.Id">
+                                    <div class="sector-mark" aria-hidden="true">⌂</div>
+                                    <div class="sector-list-copy">
+                                        <h3>@sector.Name</h3>
+                                        <p>
+                                            @if (!string.IsNullOrWhiteSpace(sector.ResponsibleName))
+                                            {
+                                                <span>@sector.ResponsibleName</span>
+                                            }
+                                            @if (sector.PeopleCount is int peopleCount)
+                                            {
+                                                <span>@(string.IsNullOrWhiteSpace(sector.ResponsibleName) ? string.Empty : " · ")@peopleCount @(peopleCount == 1 ? "pessoa" : "pessoas")</span>
+                                            }
+                                            @if (string.IsNullOrWhiteSpace(sector.ResponsibleName) && sector.PeopleCount is null)
+                                            {
+                                                <span>Responsável e equipe não informados</span>
+                                            }
+                                        </p>
+                                    </div>
+                                    <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="() => BeginEditSector(sector)">Editar</button>
+                                </article>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                <div class="workspace-empty card">
+                    <span class="workspace-empty-icon" aria-hidden="true">↖</span>
+                    <h2>Selecione um cliente</h2>
+                    <p>Escolha um cadastro à esquerda para consultar seus dados e setores.</p>
+                    <button type="button" class="btn btn-outline-primary" @onclick="BeginCreateClient">Ou cadastre um novo cliente</button>
+                </div>
+            }
+        </section>
+    </div>
+</section>
+
+@code {
+    private List<ClientContract> _clients = [];
+    private List<ClientSectorContract> _sectors = [];
+    private ClientContract? _selectedClient;
+    private ClientContract? _editingClient;
+    private ClientSectorContract? _editingSector;
+    private string _searchText = string.Empty;
+    private string? _loadError;
+    private string? _sectorsError;
+    private string? _statusMessage;
+    private bool _isLoading;
+    private bool _sectorsLoading;
+    private bool _showClientForm;
+    private bool _showSectorForm;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadClientsAsync();
+    }
+
+    private async Task LoadClientsAsync()
+    {
+        _isLoading = true;
+        _loadError = null;
+        try
+        {
+            var path = "api/clients";
+            if (!string.IsNullOrWhiteSpace(_searchText))
+            {
+                path += $"?search={Uri.EscapeDataString(_searchText.Trim())}";
+            }
+
+            using var response = await Http.GetAsync(path);
+            if (!response.IsSuccessStatusCode)
+            {
+                _loadError = "Não foi possível carregar os clientes. Tente novamente.";
+                return;
+            }
+
+            var clients = await response.Content.ReadFromJsonAsync<List<ClientContract>>();
+            if (clients is null)
+            {
+                _loadError = "A API não retornou a lista de clientes. Tente novamente.";
+                return;
+            }
+
+            _clients = clients;
+            if (_selectedClient is not null)
+            {
+                _selectedClient = clients.FirstOrDefault(client => client.Id == _selectedClient.Id) ?? _selectedClient;
+            }
+        }
+        catch (HttpRequestException)
+        {
+            _loadError = "Não foi possível conectar à API. Confira a conexão e tente novamente.";
+        }
+        catch (TaskCanceledException)
+        {
+            _loadError = "A consulta demorou mais que o esperado. Tente novamente.";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private Task SearchAsync() => LoadClientsAsync();
+
+    private async Task ClearSearchAsync()
+    {
+        _searchText = string.Empty;
+        await LoadClientsAsync();
+    }
+
+    private Task ReloadClientsAsync() => LoadClientsAsync();
+
+    private async Task SelectClientAsync(ClientContract client)
+    {
+        _statusMessage = null;
+        _showClientForm = false;
+        _showSectorForm = false;
+        _selectedClient = client;
+        _sectors = [];
+        await LoadSectorsAsync(client.Id);
+    }
+
+    private async Task LoadSectorsAsync(Guid clientId)
+    {
+        _sectorsLoading = true;
+        _sectorsError = null;
+        try
+        {
+            using var response = await Http.GetAsync($"api/clients/{clientId}/sectors");
+            if (!response.IsSuccessStatusCode)
+            {
+                _sectorsError = "Não foi possível carregar os setores. Tente novamente.";
+                return;
+            }
+
+            var sectors = await response.Content.ReadFromJsonAsync<List<ClientSectorContract>>();
+            if (sectors is null)
+            {
+                _sectorsError = "A API não retornou os setores deste cliente. Tente novamente.";
+                return;
+            }
+
+            _sectors = sectors;
+        }
+        catch (HttpRequestException)
+        {
+            _sectorsError = "Não foi possível conectar à API. Confira a conexão e tente novamente.";
+        }
+        catch (TaskCanceledException)
+        {
+            _sectorsError = "A consulta demorou mais que o esperado. Tente novamente.";
+        }
+        finally
+        {
+            _sectorsLoading = false;
+        }
+    }
+
+    private void BeginCreateClient()
+    {
+        _statusMessage = null;
+        _selectedClient = null;
+        _showSectorForm = false;
+        _editingClient = null;
+        _showClientForm = true;
+    }
+
+    private void BeginEditClient(ClientContract client)
+    {
+        _statusMessage = null;
+        _selectedClient = client;
+        _editingClient = client;
+        _showClientForm = true;
+        _showSectorForm = false;
+    }
+
+    private Task CancelClientForm()
+    {
+        _showClientForm = false;
+        _editingClient = null;
+        return Task.CompletedTask;
+    }
+
+    private async Task HandleClientSavedAsync(ClientContract savedClient)
+    {
+        _showClientForm = false;
+        _editingClient = null;
+        _selectedClient = savedClient;
+        _statusMessage = "Cliente salvo com sucesso.";
+        await LoadClientsAsync();
+        await LoadSectorsAsync(savedClient.Id);
+    }
+
+    private void BeginCreateSector()
+    {
+        _statusMessage = null;
+        _editingSector = null;
+        _showSectorForm = true;
+    }
+
+    private void BeginEditSector(ClientSectorContract sector)
+    {
+        _statusMessage = null;
+        _editingSector = sector;
+        _showSectorForm = true;
+    }
+
+    private Task CancelSectorForm()
+    {
+        _showSectorForm = false;
+        _editingSector = null;
+        return Task.CompletedTask;
+    }
+
+    private async Task HandleSectorSavedAsync(ClientSectorContract savedSector)
+    {
+        _showSectorForm = false;
+        _editingSector = null;
+        _statusMessage = "Setor salvo com sucesso.";
+        await LoadSectorsAsync(savedSector.ClientId);
+        await LoadClientsAsync();
+    }
+
+    private static string GetInitials(string value)
+    {
+        var parts = value.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return parts.Length switch
+        {
+            0 => "?",
+            1 => parts[0][..Math.Min(1, parts[0].Length)].ToUpperInvariant(),
+            _ => string.Concat(parts[0][0], parts[^1][0]).ToUpperInvariant()
+        };
+    }
+
+    private static string DisplayOptional(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "Não informado" : value;
+}

@@ -1,0 +1,300 @@
+@page "/diagnoses/{DiagnosisId:guid}/assessments/{AssessmentId:guid}"
+@using System.Net.Http.Json
+@using Prisma.Contracts.Diagnoses
+@using Prisma.Contracts.SectorAssessments
+@using Prisma.Client.Shared
+@inject HttpClient Http
+
+<UnsavedChangesGuard IsDirty="@HasUnsavedChanges" />
+
+<PageTitle>@(_assessment?.SectorNameSnapshot ?? "Entrevista") | Diagnóstico</PageTitle>
+
+<section class="assessment-page">
+    <div class="diagnosis-breadcrumbs">
+        <NavLink href="/">Início</NavLink>
+        <span aria-hidden="true">/</span>
+        @if (_diagnosis is not null)
+        {
+            <NavLink href="@($"/diagnoses/{_diagnosis.Id}")">@_diagnosis.Title</NavLink>
+        }
+        <span aria-hidden="true">/</span>
+        <span>Entrevista por setor</span>
+    </div>
+
+    @if (_isLoading)
+    {
+        <div class="state-message card assessment-state" role="status">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            <span>Carregando respostas salvas…</span>
+        </div>
+    }
+    else if (_loadError is not null)
+    {
+        <div class="state-message state-error card assessment-state" role="alert">
+            <p>@_loadError</p>
+            <button class="btn btn-outline-primary" type="button" @onclick="LoadAsync">Tentar novamente</button>
+        </div>
+    }
+    else if (_assessment is not null && _diagnosis is not null)
+    {
+        <header class="assessment-header card">
+            <div>
+                <div class="assessment-header-topline">
+                    <span class="eyebrow">ENTREVISTA POR SETOR</span>
+                    <span class="diagnosis-status status-@_diagnosis.Status.ToLowerInvariant()">@StatusLabel(_diagnosis.Status)</span>
+                </div>
+                <h1>@_assessment.SectorNameSnapshot</h1>
+                <p class="section-description">@_diagnosis.Title</p>
+            </div>
+            <div class="assessment-progress" aria-label="Progresso da entrevista">
+                <div class="assessment-progress-copy">
+                    <strong>@CurrentAnsweredCount de 10</strong>
+                    <span>perguntas preenchidas</span>
+                </div>
+                <div class="progress" role="progressbar" aria-label="Perguntas respondidas"
+                     aria-valuenow="@CurrentAnsweredCount" aria-valuemin="0" aria-valuemax="10">
+                    <div class="progress-bar" style="@($"width: {ProgressPercentage}%")"></div>
+                </div>
+                @if (HasUnsavedChanges)
+                {
+                    <span class="assessment-progress-note">O progresso será registrado após salvar.</span>
+                }
+            </div>
+        </header>
+
+        @if (_diagnosis.Status == "Completed")
+        {
+            <div class="state-message state-readonly card" role="status">
+                <strong>Diagnóstico concluído</strong>
+                <span>As respostas estão em modo de leitura. Reabra o diagnóstico para editá-las.</span>
+            </div>
+        }
+
+        @if (_saveError is not null)
+        {
+            <div class="alert alert-danger assessment-feedback" role="alert">@_saveError</div>
+        }
+        @if (_saveSucceeded)
+        {
+            <div class="alert alert-success assessment-feedback" role="status">Respostas salvas com sucesso.</div>
+        }
+
+        <EditForm Model="_answers" OnValidSubmit="SaveAsync" class="assessment-form">
+            <div class="assessment-question-list">
+                @for (var index = 0; index < Questions.Length; index++)
+                {
+                    var questionIndex = index;
+                    <section class="assessment-question card" @key="questionIndex">
+                        <label for="@AnswerElementId(questionIndex)">
+                            <span class="question-number">@(questionIndex + 1). </span>@Questions[questionIndex]
+                        </label>
+                        <textarea id="@AnswerElementId(questionIndex)"
+                                  class="form-control"
+                                  rows="3"
+                                  @bind="_answers[questionIndex]"
+                                  @bind:event="oninput"
+                                  disabled="@(IsReadOnly || _isSaving)"
+                                  aria-describedby="@AnswerHelpId(questionIndex)"></textarea>
+                        <span class="form-text" id="@AnswerHelpId(questionIndex)">Resposta opcional.</span>
+                    </section>
+                }
+            </div>
+
+            <div class="assessment-actions">
+                <NavLink class="btn btn-outline-secondary" href="@($"/diagnoses/{_diagnosis.Id}")">Voltar ao diagnóstico</NavLink>
+                @if (!IsReadOnly)
+                {
+                    <button class="btn btn-primary" type="submit" disabled="@(!_canSave)">
+                        @if (_isSaving)
+                        {
+                            <span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>
+                            <span>Salvando…</span>
+                        }
+                        else
+                        {
+                            <span>Salvar respostas</span>
+                        }
+                    </button>
+                }
+            </div>
+        </EditForm>
+    }
+</section>
+
+@code {
+    private static readonly string[] Questions =
+    [
+        "Quais atividades e processos esse setor executa?",
+        "Quais sistemas, planilhas e ferramentas utiliza?",
+        "O que mais consome tempo da equipe?",
+        "Quais tarefas são repetitivas ou exigem copiar informações?",
+        "Onde existem esperas, aprovações ou dependência de outras pessoas?",
+        "Quais erros e retrabalhos acontecem com frequência?",
+        "Que informações são difíceis de encontrar ou ficam espalhadas?",
+        "Existem falhas na comunicação ou na transferência de informações entre setores?",
+        "O que já foi tentado para melhorar esses problemas?",
+        "Qual resultado indicaria que a melhoria deu certo?"
+    ];
+
+    private readonly string[] _answers = new string[10];
+    private readonly string[] _savedAnswers = new string[10];
+    private DiagnosisContract? _diagnosis;
+    private SectorAssessmentContract? _assessment;
+    private string? _loadError;
+    private string? _saveError;
+    private bool _isLoading;
+    private bool _isSaving;
+    private bool _saveSucceeded;
+
+    [Parameter]
+    public Guid DiagnosisId { get; set; }
+
+    [Parameter]
+    public Guid AssessmentId { get; set; }
+
+    private bool IsReadOnly => _diagnosis?.Status == "Completed";
+
+    private bool HasUnsavedChanges => _assessment is not null &&
+        _answers.Where((answer, index) => !string.Equals(answer, _savedAnswers[index], StringComparison.Ordinal)).Any();
+
+    private bool _canSave => HasUnsavedChanges && !_isSaving && !IsReadOnly;
+
+    private int CurrentAnsweredCount => _answers.Count(answer => !string.IsNullOrWhiteSpace(answer));
+
+    private int ProgressPercentage => CurrentAnsweredCount * 10;
+
+    protected override Task OnParametersSetAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _isLoading = true;
+        _loadError = null;
+        _saveError = null;
+        _saveSucceeded = false;
+        _diagnosis = null;
+        _assessment = null;
+
+        try
+        {
+            using var response = await Http.GetAsync($"api/diagnoses/{DiagnosisId}");
+            if (!response.IsSuccessStatusCode)
+            {
+                _loadError = "Não foi possível carregar a entrevista. Verifique a conexão e tente novamente.";
+                return;
+            }
+
+            _diagnosis = await response.Content.ReadFromJsonAsync<DiagnosisContract>();
+            _assessment = _diagnosis?.Assessments.SingleOrDefault(assessment => assessment.Id == AssessmentId);
+            if (_diagnosis is null || _assessment is null)
+            {
+                _loadError = "A entrevista não foi encontrada neste diagnóstico.";
+                _diagnosis = null;
+                _assessment = null;
+                return;
+            }
+
+            var persistedAnswers = GetAnswers(_assessment);
+            for (var index = 0; index < _answers.Length; index++)
+            {
+                _answers[index] = persistedAnswers[index] ?? string.Empty;
+                _savedAnswers[index] = _answers[index];
+            }
+        }
+        catch (HttpRequestException)
+        {
+            _loadError = "Não foi possível carregar a entrevista. Verifique a conexão com o serviço e tente novamente.";
+        }
+        catch (TaskCanceledException)
+        {
+            _loadError = "O carregamento demorou demais. Verifique a conexão e tente novamente.";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!_canSave || _assessment is null)
+        {
+            return;
+        }
+
+        _isSaving = true;
+        _saveError = null;
+        _saveSucceeded = false;
+
+        try
+        {
+            using var response = await Http.PutAsJsonAsync(
+                $"api/diagnoses/{DiagnosisId}/assessments/{AssessmentId}/answers",
+                new AnswersInput(
+                    _answers[0], _answers[1], _answers[2], _answers[3], _answers[4],
+                    _answers[5], _answers[6], _answers[7], _answers[8], _answers[9]));
+            if (!response.IsSuccessStatusCode)
+            {
+                _saveError = response.StatusCode == System.Net.HttpStatusCode.Conflict
+                    ? "O diagnóstico foi concluído. Reabra-o antes de editar as respostas."
+                    : "Não foi possível salvar as respostas. Seus dados continuam neste formulário; tente novamente.";
+                return;
+            }
+
+            var persisted = await response.Content.ReadFromJsonAsync<SectorAssessmentContract>();
+            if (persisted is null)
+            {
+                _saveError = "O serviço não confirmou o salvamento. Seus dados continuam neste formulário; tente novamente.";
+                return;
+            }
+
+            _assessment = persisted;
+            var persistedAnswers = GetAnswers(persisted);
+            for (var index = 0; index < _answers.Length; index++)
+            {
+                _answers[index] = persistedAnswers[index] ?? string.Empty;
+                _savedAnswers[index] = _answers[index];
+            }
+
+            _saveSucceeded = true;
+        }
+        catch (HttpRequestException)
+        {
+            _saveError = "Não foi possível salvar as respostas. Seus dados continuam neste formulário; tente novamente.";
+        }
+        catch (TaskCanceledException)
+        {
+            _saveError = "O salvamento não foi confirmado. Seus dados continuam neste formulário; tente novamente.";
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private static string?[] GetAnswers(SectorAssessmentContract assessment) =>
+    [
+        assessment.Q01,
+        assessment.Q02,
+        assessment.Q03,
+        assessment.Q04,
+        assessment.Q05,
+        assessment.Q06,
+        assessment.Q07,
+        assessment.Q08,
+        assessment.Q09,
+        assessment.Q10
+    ];
+
+    private static string AnswerElementId(int index) => $"assessment-answer-{index + 1:00}";
+
+    private static string AnswerHelpId(int index) => $"assessment-answer-help-{index + 1:00}";
+
+    private static string StatusLabel(string status) => status switch
+    {
+        "Draft" => "Rascunho",
+        "InProgress" => "Em andamento",
+        "Completed" => "Concluído",
+        _ => "Status indisponível"
+    };
+
+}

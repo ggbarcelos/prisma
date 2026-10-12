@@ -1,0 +1,413 @@
+@page "/diagnoses/{DiagnosisId:guid}/bottlenecks/new"
+@page "/diagnoses/{DiagnosisId:guid}/bottlenecks/{BottleneckId:guid}/edit"
+@using System.ComponentModel.DataAnnotations
+@using System.Net
+@using System.Net.Http.Json
+@using Prisma.Client.Shared
+@using Prisma.Contracts.Bottlenecks
+@using Prisma.Contracts.Diagnoses
+@implements IDisposable
+@inject HttpClient Http
+@inject NavigationManager Navigation
+
+<UnsavedChangesGuard IsDirty="@_hasUnsavedChanges" />
+
+<PageTitle>@(_isEditing ? "Editar gargalo" : "Novo gargalo") | @_diagnosis?.Title</PageTitle>
+
+<section class="diagnosis-page bottleneck-page">
+    <div class="diagnosis-breadcrumbs">
+        <NavLink href="/">Início</NavLink>
+        <span aria-hidden="true">/</span>
+        @if (_diagnosis is not null)
+        {
+            <NavLink href="@($"/diagnoses/{_diagnosis.Id}")">@_diagnosis.Title</NavLink>
+            <span aria-hidden="true">/</span>
+            <NavLink href="@($"/diagnoses/{_diagnosis.Id}/bottlenecks")">Gargalos</NavLink>
+        }
+        <span aria-hidden="true">/</span>
+        <span>@(_isEditing ? "Editar" : "Novo")</span>
+    </div>
+
+    @if (_isLoading)
+    {
+        <div class="state-message card diagnosis-state" role="status">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            <span>Carregando formulário…</span>
+        </div>
+    }
+    else if (_loadError is not null)
+    {
+        <div class="state-message state-error card diagnosis-state" role="alert">
+            <p>@_loadError</p>
+            <button class="btn btn-outline-primary" type="button" @onclick="LoadAsync">Tentar novamente</button>
+            @if (_diagnosis is not null)
+            {
+                <NavLink class="btn btn-link" href="@($"/diagnoses/{DiagnosisId}/bottlenecks")">Voltar à lista</NavLink>
+            }
+        </div>
+    }
+    else if (_diagnosis is not null && _editContext is not null)
+    {
+        <header class="bottleneck-form-header">
+            <div>
+                <p class="eyebrow">GARGALO · @_diagnosis.Title</p>
+                <h1>@(_isEditing ? "Editar gargalo" : "Registrar gargalo")</h1>
+                <p class="section-description">Descreva o problema observado sem misturar evidência com causa provável.</p>
+            </div>
+            <span class="status-pill status-@_diagnosis.Status">@GetStatusLabel(_diagnosis.Status)</span>
+        </header>
+
+        @if (IsReadOnly)
+        {
+            <div class="alert alert-info" role="status">
+                Este diagnóstico está concluído e é somente leitura. Reabra-o para alterar os gargalos.
+            </div>
+        }
+        @if (_diagnosis.Assessments.Count == 0)
+        {
+            <div class="alert alert-warning" role="status">
+                Vincule um setor avaliado ao diagnóstico antes de registrar gargalos.
+            </div>
+        }
+        @if (_saveError is not null)
+        {
+            <div class="alert alert-danger" role="alert">@_saveError</div>
+        }
+
+        <EditForm EditContext="_editContext" OnValidSubmit="SaveAsync" class="bottleneck-form card">
+            <DataAnnotationsValidator />
+            <ValidationSummary class="validation-summary" />
+
+            <fieldset disabled="@(IsReadOnly || _isSaving || _diagnosis.Assessments.Count == 0)" class="bottleneck-fields">
+                <div class="bottleneck-form-grid">
+                    <div class="form-field form-field-wide">
+                        <label class="form-label" for="bottleneck-title">Título <span class="required-mark">*</span></label>
+                        <InputText id="bottleneck-title" class="form-control" @bind-Value="_model.Title" />
+                        <ValidationMessage For="@(() => _model.Title)" />
+                    </div>
+
+                    <div class="form-field">
+                        <label class="form-label" for="bottleneck-sector">Setor avaliado <span class="required-mark">*</span></label>
+                        <InputSelect id="bottleneck-sector" class="form-select" @bind-Value="_model.SectorAssessmentId">
+                            <option value="">Selecione um setor</option>
+                            @foreach (var assessment in _diagnosis.Assessments)
+                            {
+                                <option value="@assessment.Id">@assessment.SectorNameSnapshot</option>
+                            }
+                        </InputSelect>
+                        <ValidationMessage For="@(() => _model.SectorAssessmentId)" />
+                    </div>
+
+                    <div class="form-field">
+                        <label class="form-label" for="bottleneck-category">Categoria <span class="required-mark">*</span></label>
+                        <InputSelect id="bottleneck-category" class="form-select" @bind-Value="_model.Category">
+                            <option value="">Selecione uma categoria</option>
+                            @foreach (var category in Categories)
+                            {
+                                <option value="@category.Code">@category.Label</option>
+                            }
+                        </InputSelect>
+                        <ValidationMessage For="@(() => _model.Category)" />
+                    </div>
+
+                    <div class="form-field">
+                        <label class="form-label" for="bottleneck-impact">Impacto <span class="required-mark">*</span></label>
+                        <InputNumber id="bottleneck-impact" class="form-control" @bind-Value="_model.Impact" min="1" max="5" />
+                        <div class="form-hint">Escolha um valor de 1 a 5.</div>
+                        <ValidationMessage For="@(() => _model.Impact)" />
+                    </div>
+
+                    <div class="form-field">
+                        <label class="form-label" for="bottleneck-frequency">Frequência</label>
+                        <InputText id="bottleneck-frequency" class="form-control" @bind-Value="_model.Frequency" />
+                        <div class="form-hint">Ex.: diariamente, semanalmente ou em períodos específicos.</div>
+                    </div>
+
+                    <div class="form-field form-field-wide">
+                        <label class="form-label" for="bottleneck-description">Descrição</label>
+                        <InputTextArea id="bottleneck-description" class="form-control bottleneck-textarea" @bind-Value="_model.Description" rows="3" />
+                    </div>
+
+                    <div class="form-field">
+                        <label class="form-label" for="bottleneck-evidence">Evidência ou exemplo</label>
+                        <InputTextArea id="bottleneck-evidence" class="form-control bottleneck-textarea" @bind-Value="_model.Evidence" rows="3" />
+                        <div class="form-hint">Fato ou exemplo observado.</div>
+                    </div>
+
+                    <div class="form-field">
+                        <label class="form-label" for="bottleneck-cause">Causa provável</label>
+                        <InputTextArea id="bottleneck-cause" class="form-control bottleneck-textarea" @bind-Value="_model.ProbableCause" rows="3" />
+                        <div class="form-hint">Hipótese sobre a origem do problema.</div>
+                    </div>
+
+                    <div class="form-field">
+                        <label class="form-label" for="bottleneck-hours">Horas mensais estimadas</label>
+                        <InputNumber id="bottleneck-hours" class="form-control" @bind-Value="_model.EstimatedMonthlyHours" min="0" step="0.25" />
+                        <ValidationMessage For="@(() => _model.EstimatedMonthlyHours)" />
+                    </div>
+
+                    <div class="form-field form-field-wide">
+                        <label class="form-label" for="bottleneck-notes">Observações</label>
+                        <InputTextArea id="bottleneck-notes" class="form-control bottleneck-textarea" @bind-Value="_model.Notes" rows="3" />
+                    </div>
+                </div>
+            </fieldset>
+
+            <div class="bottleneck-form-footer">
+                <p class="form-hint"><span class="required-mark">*</span> Campos obrigatórios</p>
+                <div class="form-actions">
+                    <NavLink class="btn btn-outline-secondary" href="@($"/diagnoses/{DiagnosisId}/bottlenecks")">Cancelar</NavLink>
+                    @if (!IsReadOnly && _diagnosis.Assessments.Count > 0)
+                    {
+                        <button class="btn btn-primary" type="submit" disabled="@_isSaving">
+                            @if (_isSaving)
+                            {
+                                <span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>
+                                <span>Salvando…</span>
+                            }
+                            else
+                            {
+                                <span>Salvar gargalo</span>
+                            }
+                        </button>
+                    }
+                </div>
+            </div>
+        </EditForm>
+    }
+</section>
+
+@code {
+    private static readonly (string Code, string Label)[] Categories =
+    [
+        ("ManualWork", "Trabalho manual"),
+        ("Repetition", "Repetição"),
+        ("Rework", "Retrabalho"),
+        ("Delay", "Demora"),
+        ("MissingIntegration", "Falta de integração"),
+        ("ScatteredInformation", "Informações dispersas"),
+        ("PeopleDependency", "Dependência de pessoas"),
+        ("CommercialProblem", "Problema comercial"),
+        ("Other", "Outro")
+    ];
+
+    [Parameter] public Guid DiagnosisId { get; set; }
+    [Parameter] public Guid? BottleneckId { get; set; }
+
+    private DiagnosisContract? _diagnosis;
+    private BottleneckContract? _bottleneck;
+    private BottleneckFormModel _model = new();
+    private EditContext? _editContext;
+    private string? _loadError;
+    private string? _saveError;
+    private bool _isLoading;
+    private bool _isSaving;
+    private bool _hasUnsavedChanges;
+
+    private bool IsReadOnly => _diagnosis?.Status == "Completed";
+    private bool _isEditing => BottleneckId.HasValue;
+
+    protected override Task OnParametersSetAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _isLoading = true;
+        _loadError = null;
+        _saveError = null;
+        _diagnosis = null;
+        _bottleneck = null;
+        _editContext?.OnFieldChanged -= HandleFieldChanged;
+        _editContext = null;
+        _hasUnsavedChanges = false;
+        try
+        {
+            using var diagnosisResponse = await Http.GetAsync($"api/diagnoses/{DiagnosisId}");
+            if (diagnosisResponse.StatusCode == HttpStatusCode.NotFound)
+            {
+                _loadError = "O diagnóstico não foi encontrado.";
+                return;
+            }
+
+            if (!diagnosisResponse.IsSuccessStatusCode)
+            {
+                _loadError = "Não foi possível carregar o diagnóstico. Tente novamente.";
+                return;
+            }
+
+            _diagnosis = await diagnosisResponse.Content.ReadFromJsonAsync<DiagnosisContract>();
+            if (_diagnosis is null)
+            {
+                _loadError = "A API não retornou os dados do diagnóstico.";
+                return;
+            }
+
+            if (BottleneckId.HasValue)
+            {
+                using var listResponse = await Http.GetAsync($"api/diagnoses/{DiagnosisId}/bottlenecks");
+                if (!listResponse.IsSuccessStatusCode)
+                {
+                    _loadError = "Não foi possível carregar os dados do gargalo. Tente novamente.";
+                    return;
+                }
+
+                var items = await listResponse.Content.ReadFromJsonAsync<List<BottleneckContract>>() ?? [];
+                _bottleneck = items.SingleOrDefault(item => item.Id == BottleneckId.Value);
+                if (_bottleneck is null)
+                {
+                    _loadError = "O gargalo não foi encontrado neste diagnóstico.";
+                    return;
+                }
+            }
+
+            _model = _bottleneck is null
+                ? new BottleneckFormModel()
+                : new BottleneckFormModel
+                {
+                    SectorAssessmentId = _bottleneck.SectorAssessmentId,
+                    Title = _bottleneck.Title,
+                    Description = _bottleneck.Description ?? string.Empty,
+                    Category = _bottleneck.Category,
+                    Impact = _bottleneck.Impact,
+                    Frequency = _bottleneck.Frequency ?? string.Empty,
+                    Evidence = _bottleneck.Evidence ?? string.Empty,
+                    ProbableCause = _bottleneck.ProbableCause ?? string.Empty,
+                    EstimatedMonthlyHours = _bottleneck.EstimatedMonthlyHours,
+                    Notes = _bottleneck.Notes ?? string.Empty
+                };
+            _editContext = new EditContext(_model);
+            _editContext.OnFieldChanged += HandleFieldChanged;
+        }
+        catch (HttpRequestException)
+        {
+            _loadError = "Não foi possível conectar à API. Verifique o serviço e tente novamente.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _loadError = "A resposta da API não pôde ser lida. Tente novamente.";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void HandleFieldChanged(object? sender, FieldChangedEventArgs args)
+    {
+        _hasUnsavedChanges = true;
+        _saveError = null;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_isSaving || IsReadOnly || _diagnosis is null || _model.SectorAssessmentId is null)
+        {
+            return;
+        }
+
+        _isSaving = true;
+        _saveError = null;
+        try
+        {
+            var input = new BottleneckInput(
+                _model.SectorAssessmentId.Value,
+                _model.Title,
+                NormalizeOptional(_model.Description),
+                _model.Category,
+                _model.Impact,
+                NormalizeOptional(_model.Frequency),
+                NormalizeOptional(_model.Evidence),
+                NormalizeOptional(_model.ProbableCause),
+                _model.EstimatedMonthlyHours,
+                NormalizeOptional(_model.Notes));
+
+            using var response = _bottleneck is null
+                ? await Http.PostAsJsonAsync($"api/diagnoses/{DiagnosisId}/bottlenecks", input)
+                : await Http.PutAsJsonAsync($"api/diagnoses/{DiagnosisId}/bottlenecks/{_bottleneck.Id}", input);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _saveError = response.StatusCode switch
+                {
+                    HttpStatusCode.BadRequest => "Revise os campos destacados e informe valores válidos.",
+                    HttpStatusCode.NotFound => "O setor avaliado não está mais disponível neste diagnóstico.",
+                    HttpStatusCode.Conflict => "Não foi possível salvar. Confirme se o diagnóstico pode ser editado e tente novamente.",
+                    _ => "Não foi possível salvar o gargalo. Seus dados continuam neste formulário."
+                };
+                return;
+            }
+
+            var savedBottleneck = await response.Content.ReadFromJsonAsync<BottleneckContract>();
+            if (savedBottleneck is null)
+            {
+                _saveError = "A API não confirmou o gargalo salvo. Mantenha o formulário aberto e tente novamente.";
+                return;
+            }
+
+            _hasUnsavedChanges = false;
+            Navigation.NavigateTo($"/diagnoses/{DiagnosisId}/bottlenecks");
+        }
+        catch (HttpRequestException)
+        {
+            _saveError = "Não foi possível conectar à API. Seus dados continuam neste formulário; tente novamente.";
+        }
+        catch (TaskCanceledException)
+        {
+            _saveError = "Não foi possível confirmar o salvamento. Seus dados continuam neste formulário; tente novamente.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _saveError = "A resposta da API não confirmou o salvamento. Seus dados continuam neste formulário.";
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private static string? NormalizeOptional(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string GetStatusLabel(string status) => status switch
+    {
+        "Draft" => "Rascunho",
+        "InProgress" => "Em andamento",
+        "Completed" => "Concluído",
+        _ => "Status indisponível"
+    };
+
+    public void Dispose()
+    {
+        if (_editContext is not null)
+        {
+            _editContext.OnFieldChanged -= HandleFieldChanged;
+        }
+    }
+
+    private sealed class BottleneckFormModel
+    {
+        [Required(ErrorMessage = "Selecione um setor avaliado.")]
+        public Guid? SectorAssessmentId { get; set; }
+
+        [Required(ErrorMessage = "Informe o título do gargalo.")]
+        public string Title { get; set; } = string.Empty;
+
+        public string Description { get; set; } = string.Empty;
+
+        [Required(ErrorMessage = "Selecione uma categoria.")]
+        public string Category { get; set; } = string.Empty;
+
+        [Range(1, 5, ErrorMessage = "O impacto deve estar entre 1 e 5.")]
+        public int Impact { get; set; } = 3;
+
+        public string Frequency { get; set; } = string.Empty;
+
+        public string Evidence { get; set; } = string.Empty;
+
+        public string ProbableCause { get; set; } = string.Empty;
+
+        [Range(typeof(decimal), "0", "79228162514264337593543950335", ErrorMessage = "As horas estimadas não podem ser negativas.")]
+        public decimal? EstimatedMonthlyHours { get; set; }
+
+        public string Notes { get; set; } = string.Empty;
+    }
+}

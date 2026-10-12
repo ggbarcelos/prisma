@@ -1,0 +1,485 @@
+@page "/diagnoses/{DiagnosisId:guid}"
+@using System.Net
+@using System.Net.Http.Json
+@using Microsoft.AspNetCore.Components.Routing
+@using Prisma.Contracts.Clients
+@using Prisma.Contracts.Diagnoses
+@using Prisma.Contracts.SectorAssessments
+@implements IDisposable
+@inject HttpClient Http
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<NavigationLock ConfirmExternalNavigation="_hasPendingSector" OnBeforeInternalNavigation="ConfirmInternalNavigationAsync" />
+
+<PageTitle>@(_diagnosis?.Title ?? "Diagnóstico") | Diagnóstico</PageTitle>
+
+<section class="diagnosis-page">
+    <div class="diagnosis-breadcrumbs">
+        <NavLink href="/">Início</NavLink>
+        <span aria-hidden="true">/</span>
+        <span>Diagnóstico</span>
+    </div>
+
+    @if (_isLoading)
+    {
+        <div class="state-message card diagnosis-state" role="status">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            <span>Carregando diagnóstico…</span>
+        </div>
+    }
+    else if (_loadError is not null)
+    {
+        <div class="state-message state-error card diagnosis-state" role="alert">
+            <p>@_loadError</p>
+            <button class="btn btn-outline-primary" type="button" @onclick="LoadAsync">Tentar novamente</button>
+        </div>
+    }
+    else if (_diagnosis is not null)
+    {
+        <header class="diagnosis-page-header diagnosis-detail-header">
+            <div>
+                <p class="eyebrow">DIAGNÓSTICO</p>
+                <h1>@_diagnosis.Title</h1>
+                <div class="diagnosis-subtitle">
+                    <span>@_diagnosis.ClientName</span>
+                    <span aria-hidden="true">·</span>
+                    <span>@_diagnosis.AssessmentDate.ToString("dd/MM/yyyy")</span>
+                </div>
+            </div>
+            <div class="diagnosis-header-actions">
+                <span class="status-pill status-@_diagnosis.Status">@GetStatusLabel(_diagnosis.Status)</span>
+                @if (_diagnosis.Status != "Completed")
+                {
+                    <NavLink class="btn btn-outline-primary" href="@($"/diagnoses/{_diagnosis.Id}/edit")">Editar dados</NavLink>
+                }
+            </div>
+        </header>
+
+        @if (!string.IsNullOrWhiteSpace(_statusMessage))
+        {
+            <div class="alert alert-success" role="status">@_statusMessage</div>
+        }
+        @if (_saveError is not null)
+        {
+            <div class="alert alert-danger" role="alert">@_saveError</div>
+        }
+
+        <nav class="diagnosis-stage-nav" aria-label="Etapas do diagnóstico">
+            <a class="active" href="@($"/diagnoses/{_diagnosis.Id}")" aria-current="page"><span>1</span> Preparação</a>
+            @if (_diagnosis.Assessments.FirstOrDefault() is { } firstAssessment)
+            {
+                <NavLink href="@($"/diagnoses/{_diagnosis.Id}/assessments/{firstAssessment.Id}")"><span>2</span> Entrevistas</NavLink>
+            }
+            else
+            {
+                <span class="stage-upcoming"><span>2</span> Entrevistas</span>
+            }
+            <NavLink href="@($"/diagnoses/{_diagnosis.Id}/bottlenecks")"><span>3</span> Gargalos e oportunidades</NavLink>
+            <NavLink href="@($"/diagnoses/{_diagnosis.Id}/phases")"><span>4</span> Plano</NavLink>
+            <NavLink href="@($"/diagnoses/{_diagnosis.Id}/report")"><span>5</span> Relatório</NavLink>
+        </nav>
+
+        @if (_diagnosis.Status == "Completed")
+        {
+            <div class="alert alert-info" role="status">
+                Este diagnóstico está concluído e é somente leitura. A reabertura será disponibilizada na etapa de revisão.
+            </div>
+        }
+
+        <section class="diagnosis-card card" aria-labelledby="diagnosis-overview-heading">
+            <div class="diagnosis-section-heading">
+                <div>
+                    <p class="eyebrow">VISÃO GERAL</p>
+                    <h2 id="diagnosis-overview-heading">Objetivos e contexto</h2>
+                </div>
+                @if (_diagnosis.Status != "Completed")
+                {
+                    <button class="btn btn-sm btn-outline-primary" type="button" disabled="@_isSaving" @onclick="ToggleStatusAsync">
+                        @(_diagnosis.Status == "Draft" ? "Iniciar diagnóstico" : "Mover para rascunho")
+                    </button>
+                }
+            </div>
+
+            @if (_diagnosis.Objectives.Count == 0)
+            {
+                <p class="diagnosis-empty-inline">Nenhum objetivo foi selecionado. <NavLink href="@($"/diagnoses/{_diagnosis.Id}/edit")">Adicionar objetivos</NavLink></p>
+            }
+            else
+            {
+                <div class="diagnosis-objective-pills">
+                    @foreach (var objective in _diagnosis.Objectives)
+                    {
+                        <span class="diagnosis-objective-pill" @key="objective.Code">
+                            @GetObjectiveLabel(objective.Code!)
+                            @if (objective.Code == "Other" && !string.IsNullOrWhiteSpace(objective.CustomDescription))
+                            {
+                                <span>: @objective.CustomDescription</span>
+                            }
+                            @if (objective.IsPrimary)
+                            {
+                                <span class="primary-badge">Principal</span>
+                            }
+                        </span>
+                    }
+                </div>
+            }
+
+            <div class="diagnosis-context">
+                <h3>Contexto</h3>
+                <p>@DisplayOptional(_diagnosis.Context)</p>
+            </div>
+        </section>
+
+        <section class="diagnosis-card card" aria-labelledby="assessments-heading">
+            <div class="diagnosis-section-heading">
+                <div>
+                    <p class="eyebrow">ENTREVISTAS</p>
+                    <h2 id="assessments-heading">Setores avaliados</h2>
+                    <p class="section-description">Vincule os setores que serão entrevistados. O nome fica preservado neste diagnóstico.</p>
+                </div>
+                <span class="count-badge">@_diagnosis.Assessments.Count</span>
+            </div>
+
+            @if (_sectorLoadError is not null)
+            {
+                <div class="state-message state-error compact-state" role="alert">
+                    <p>@_sectorLoadError</p>
+                    <button class="btn btn-sm btn-outline-primary" type="button" @onclick="LoadSectorsAsync">Tentar novamente</button>
+                </div>
+            }
+            else if (_diagnosis.Status != "Completed" && AvailableSectors.Count > 0)
+            {
+                <div class="assessment-add-row">
+                    <div class="form-field">
+                        <label class="form-label" for="assessment-sector-select">Setor do cliente</label>
+                        <select id="assessment-sector-select" class="form-select" value="@_selectedSectorId" @onchange="HandleSectorSelection">
+                            <option value="">Selecione um setor para vincular</option>
+                            @foreach (var sector in AvailableSectors)
+                            {
+                                <option value="@sector.Id">@sector.Name</option>
+                            }
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" type="button" disabled="@(_isSaving || !_selectedSectorId.HasValue)" @onclick="AddAssessmentAsync">
+                        @if (_isSaving)
+                        {
+                            <span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>
+                            <span>Salvando…</span>
+                        }
+                        else
+                        {
+                            <span>Vincular setor</span>
+                        }
+                    </button>
+                </div>
+                <p class="form-hint">O vínculo só é gravado após selecionar o setor e escolher “Vincular setor”.</p>
+            }
+            else if (_diagnosis.Status != "Completed" && _clientSectors.Count == 0 && _sectorLoadError is null)
+            {
+                <div class="state-message compact-state empty-sectors">
+                    <strong>Nenhum setor disponível</strong>
+                    <span>Cadastre setores na página do cliente antes de vinculá-los.</span>
+                    <NavLink class="btn btn-sm btn-outline-primary mt-2" href="/clients">Acessar clientes</NavLink>
+                </div>
+            }
+            else if (_diagnosis.Status != "Completed" && AvailableSectors.Count == 0)
+            {
+                <div class="state-message compact-state empty-sectors">
+                    <strong>Todos os setores já foram vinculados</strong>
+                    <span>Você pode continuar para as entrevistas de cada setor.</span>
+                </div>
+            }
+
+            @if (_diagnosis.Assessments.Count == 0)
+            {
+                <div class="state-message compact-state empty-sectors">
+                    <strong>Nenhum setor avaliado</strong>
+                    <span>Escolha um setor acima para iniciar uma entrevista.</span>
+                </div>
+            }
+            else
+            {
+                <div class="assessment-list">
+                    @foreach (var assessment in _diagnosis.Assessments)
+                    {
+                        <article class="assessment-list-item" @key="assessment.Id">
+                            <span class="sector-mark" aria-hidden="true">⌂</span>
+                            <div class="assessment-list-copy">
+                                <h3>@assessment.SectorNameSnapshot</h3>
+                                <p>@assessment.AnsweredCount de 10 perguntas respondidas</p>
+                            </div>
+                            <NavLink class="btn btn-outline-primary btn-sm" href="@($"/diagnoses/{_diagnosis.Id}/assessments/{assessment.Id}")">Abrir entrevista</NavLink>
+                        </article>
+                    }
+                </div>
+            }
+        </section>
+    }
+</section>
+
+@code {
+    private static readonly IReadOnlyDictionary<string, string> ObjectiveLabels = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["ReduceCosts"] = "Reduzir custos",
+        ["ImproveProductivity"] = "Melhorar produtividade",
+        ["ReduceErrorsAndRework"] = "Diminuir erros e retrabalho",
+        ["ImproveService"] = "Melhorar atendimento",
+        ["IncreaseSales"] = "Aumentar vendas",
+        ["IntegrateInformation"] = "Integrar informações",
+        ["Other"] = "Outro"
+    };
+
+    [Parameter] public Guid DiagnosisId { get; set; }
+
+    private DiagnosisContract? _diagnosis;
+    private List<ClientSectorContract> _clientSectors = [];
+    private Guid? _selectedSectorId;
+    private string? _loadError;
+    private string? _sectorLoadError;
+    private string? _saveError;
+    private string? _statusMessage;
+    private bool _isLoading;
+    private bool _isSaving;
+    private bool _hasPendingSector;
+
+    private List<ClientSectorContract> AvailableSectors => _diagnosis is null
+        ? []
+        : _clientSectors
+            .Where(sector => _diagnosis.Assessments.All(assessment => assessment.ClientSectorId != sector.Id))
+            .OrderBy(sector => sector.Name, StringComparer.CurrentCulture)
+            .ToList();
+
+    protected override Task OnParametersSetAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _isLoading = true;
+        _loadError = null;
+        _sectorLoadError = null;
+        _saveError = null;
+        try
+        {
+            using var response = await Http.GetAsync($"api/diagnoses/{DiagnosisId}");
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                _diagnosis = null;
+                _loadError = "O diagnóstico não foi encontrado.";
+                return;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _loadError = "Não foi possível carregar o diagnóstico. Tente novamente.";
+                return;
+            }
+
+            _diagnosis = await response.Content.ReadFromJsonAsync<DiagnosisContract>();
+            if (_diagnosis is null)
+            {
+                _loadError = "A API não retornou os dados do diagnóstico.";
+                return;
+            }
+
+            _selectedSectorId = null;
+            _hasPendingSector = false;
+            await LoadSectorsAsync();
+        }
+        catch (HttpRequestException)
+        {
+            _loadError = "Não foi possível conectar à API. Confira a conexão e tente carregar novamente.";
+        }
+        catch (TaskCanceledException)
+        {
+            _loadError = "A resposta da API demorou mais que o esperado. Tente carregar novamente.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _loadError = "A API retornou dados que não puderam ser lidos.";
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task LoadSectorsAsync()
+    {
+        if (_diagnosis is null)
+        {
+            return;
+        }
+
+        _sectorLoadError = null;
+        try
+        {
+            var sectors = await Http.GetFromJsonAsync<List<ClientSectorContract>>($"api/clients/{_diagnosis.ClientId}/sectors");
+            _clientSectors = sectors ?? [];
+        }
+        catch (HttpRequestException)
+        {
+            _sectorLoadError = "Não foi possível carregar os setores do cliente.";
+        }
+        catch (TaskCanceledException)
+        {
+            _sectorLoadError = "A resposta da API demorou mais que o esperado ao carregar os setores.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _sectorLoadError = "A API retornou dados de setor que não puderam ser lidos.";
+        }
+    }
+
+    private void HandleSectorSelection(ChangeEventArgs args)
+    {
+        _selectedSectorId = Guid.TryParse(args.Value?.ToString(), out var sectorId) ? sectorId : null;
+        _hasPendingSector = _selectedSectorId.HasValue;
+        _saveError = null;
+    }
+
+    private async Task AddAssessmentAsync()
+    {
+        if (_diagnosis is null || _selectedSectorId is not Guid sectorId || _isSaving)
+        {
+            return;
+        }
+
+        _isSaving = true;
+        _saveError = null;
+        try
+        {
+            using var response = await Http.PostAsJsonAsync(
+                $"api/diagnoses/{_diagnosis.Id}/assessments",
+                new SectorAssessmentInput(sectorId));
+            if (!response.IsSuccessStatusCode)
+            {
+                _saveError = response.StatusCode switch
+                {
+                    HttpStatusCode.NotFound => "O setor não pertence mais a este cliente. Atualize a tela e tente novamente.",
+                    HttpStatusCode.Conflict => "Não foi possível vincular este setor ao diagnóstico.",
+                    _ => "Não foi possível salvar o vínculo do setor. Tente novamente."
+                };
+                return;
+            }
+
+            var persistedAssessment = await response.Content.ReadFromJsonAsync<SectorAssessmentContract>();
+            if (persistedAssessment is null)
+            {
+                _saveError = "A API não confirmou o setor salvo. Atualize para conferir antes de tentar novamente.";
+                return;
+            }
+
+            _hasPendingSector = false;
+            _selectedSectorId = null;
+            _statusMessage = $"Setor “{persistedAssessment.SectorNameSnapshot}” vinculado ao diagnóstico.";
+            await LoadAsync();
+        }
+        catch (HttpRequestException)
+        {
+            _saveError = "Não foi possível conectar à API. A seleção continua disponível para uma nova tentativa.";
+        }
+        catch (TaskCanceledException)
+        {
+            _saveError = "Não foi possível confirmar o vínculo. A seleção continua disponível para uma nova tentativa.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _saveError = "A API não confirmou o vínculo do setor. Atualize a tela para conferir.";
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task ToggleStatusAsync()
+    {
+        if (_diagnosis is null || _diagnosis.Status == "Completed" || _isSaving)
+        {
+            return;
+        }
+
+        _isSaving = true;
+        _saveError = null;
+        _statusMessage = null;
+        var newStatus = _diagnosis.Status == "Draft" ? "InProgress" : "Draft";
+        try
+        {
+            using var response = await Http.PutAsJsonAsync(
+                $"api/diagnoses/{_diagnosis.Id}/status",
+                new DiagnosisStatusInput(newStatus));
+            if (!response.IsSuccessStatusCode)
+            {
+                _saveError = response.StatusCode == HttpStatusCode.Conflict
+                    ? "O status não pode ser alterado enquanto o diagnóstico estiver concluído."
+                    : "Não foi possível atualizar o status. Tente novamente.";
+                return;
+            }
+
+            var persisted = await response.Content.ReadFromJsonAsync<DiagnosisSummaryContract>();
+            if (persisted is null)
+            {
+                _saveError = "A API não confirmou o status salvo. Atualize a tela para conferir.";
+                return;
+            }
+
+            _statusMessage = $"Status atualizado para {GetStatusLabel(persisted.Status)}.";
+            await LoadAsync();
+        }
+        catch (HttpRequestException)
+        {
+            _saveError = "Não foi possível conectar à API. O status não foi confirmado; tente novamente.";
+        }
+        catch (TaskCanceledException)
+        {
+            _saveError = "Não foi possível confirmar a alteração de status. Tente novamente.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            _saveError = "A API não confirmou a alteração de status. Atualize a tela para conferir.";
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task ConfirmInternalNavigationAsync(LocationChangingContext context)
+    {
+        if (!_hasPendingSector)
+        {
+            return;
+        }
+
+        var shouldLeave = await JS.InvokeAsync<bool>(
+            "confirm",
+            "O setor selecionado ainda não foi vinculado. Deseja sair e descartar a seleção?");
+        if (!shouldLeave)
+        {
+            context.PreventNavigation();
+        }
+        else
+        {
+            _hasPendingSector = false;
+        }
+    }
+
+    private static string GetStatusLabel(string status) => status switch
+    {
+        "Draft" => "Rascunho",
+        "InProgress" => "Em andamento",
+        "Completed" => "Concluído",
+        _ => status
+    };
+
+    private static string GetObjectiveLabel(string code) =>
+        ObjectiveLabels.TryGetValue(code, out var label) ? label : code;
+
+    private static string DisplayOptional(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "Não informado" : value;
+
+    public void Dispose()
+    {
+        _hasPendingSector = false;
+    }
+}
